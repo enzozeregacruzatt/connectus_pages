@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="robots" content="noindex">
+  <title>Consulta de SMS</title>
+  <link rel="stylesheet" href="app.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="hero__text">
+        <p class="hero__eyebrow">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2l8 3v6c0 5-3.4 9.3-8 11-4.6-1.7-8-6-8-11V5z"/></svg>
+          <span>Acceso de solo lectura</span>
+        </p>
+        <h1 class="hero__title">Consulta de SMS</h1>
+      </div>
+      <p class="hero__limit">
+        <svg class="icon hero__limit-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
+        <span>
+          <strong>Hasta 15 días</strong>
+          <span class="hero__limit-note">por consulta</span>
+        </span>
+      </p>
+    </header>
+
+    <noscript>
+      <p class="notice notice--error">Esta consulta necesita JavaScript para funcionar.</p>
+    </noscript>
+
+    <p class="notice" id="load-notice" role="status">La consulta está tardando en cargar. Si no aparece, recarga la página.</p>
+
+    <section class="card card--narrow" id="login-view" aria-labelledby="login-title" hidden>
+      <div class="card__body">
+        <h2 class="card__title" id="login-title">Ingresar</h2>
+        <form id="login-form" class="stack">
+          <div class="field">
+            <label class="field__label" for="login-username">Usuario</label>
+            <input class="control" id="login-username" name="username" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required>
+          </div>
+          <div class="field">
+            <label class="field__label" for="login-password">Contraseña</label>
+            <input class="control" id="login-password" name="password" type="password" autocomplete="current-password" required>
+          </div>
+          <button class="button" id="login-button" type="submit">Entrar</button>
+        </form>
+        <p class="notice" id="login-status" role="status" aria-live="polite"></p>
+        <p class="notice notice--error" id="login-error" role="alert"></p>
+      </div>
+    </section>
+
+    <div class="stack" id="query-view" hidden>
+      <section class="card" aria-labelledby="search-title">
+        <div class="card__body">
+          <div class="card__head">
+            <div class="card__icon">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>
+            </div>
+            <h2 class="card__title card__heading" id="search-title">Buscar mensajes</h2>
+            <button class="button button--secondary" id="logout-button" type="button">Salir</button>
+          </div>
+          <p class="muted card__intro">El número destino es opcional. Si lo dejas vacío, verás todos los SMS del período.</p>
+
+          <form class="filters" id="search-form" novalidate>
+            <div class="field" id="account-choice" hidden>
+              <label class="field__label" for="account-select">Cuenta</label>
+              <select class="control" id="account-select" name="account"></select>
+            </div>
+            <div class="field" id="account-single" hidden>
+              <span class="field__label">Cuenta</span>
+              <span class="field__static" id="account-name"></span>
+            </div>
+            <div class="field">
+              <label class="field__label" for="filter-number">Número destino</label>
+              <input class="control" id="filter-number" name="dst" type="tel" inputmode="tel" autocomplete="off" placeholder="Opcional: 56900000000">
+            </div>
+            <div class="field">
+              <label class="field__label" for="filter-start">Desde</label>
+              <input class="control" id="filter-start" name="start" type="date" required>
+            </div>
+            <div class="field">
+              <label class="field__label" for="filter-end">Hasta</label>
+              <input class="control" id="filter-end" name="end" type="date" required>
+            </div>
+            <button class="button" id="search-button" type="submit">Buscar</button>
+          </form>
+
+          <p class="notice" id="search-status" role="status" aria-live="polite"></p>
+          <p class="notice notice--error" id="search-error" role="alert"></p>
+        </div>
+      </section>
+
+      <section class="card" id="results" aria-labelledby="results-title" aria-busy="false" hidden>
+        <div class="card__body card__body--compact">
+          <h2 class="card__title" id="results-title" tabindex="-1">Resultados</h2>
+          <p class="muted" id="results-summary"></p>
+        </div>
+        <div class="table-wrap" tabindex="0" role="region" aria-labelledby="results-title">
+          <table class="sms-table">
+            <caption class="visually-hidden">Mensajes SMS encontrados para los filtros indicados</caption>
+            <thead>
+              <tr>
+                <th scope="col">Fecha</th>
+                <th scope="col">Número destino</th>
+                <th scope="col">Mensaje</th>
+                <th scope="col">Estado</th>
+                <th scope="col">Envío</th>
+              </tr>
+            </thead>
+            <tbody id="results-body"></tbody>
+          </table>
+        </div>
+        <nav class="pager" id="pager" aria-label="Paginación de resultados" hidden>
+          <button class="button button--secondary" id="page-prev" type="button">Anterior</button>
+          <span class="muted" id="page-label"></span>
+          <button class="button button--secondary" id="page-next" type="button">Siguiente</button>
+        </nav>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

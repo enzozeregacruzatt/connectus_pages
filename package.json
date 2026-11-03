@@ -1,0 +1,21 @@
+{
+  "name": "connectus-pages",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Mini app de consulta de SMS de solo lectura, para embeber en un iframe.",
+  "main": "src/handler.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test 'test/unit/**/*.test.js'",
+    "test:integration": "scripts/mysql_prueba.sh up && node --test 'test/integration/**/*.test.js'; rc=$?; scripts/mysql_prueba.sh down; exit $rc"
+  },
+  "dependencies": {
+    "aws-ssl-profiles": "1.1.2",
+    "mysql2": "3.24.5"
+  },
+  "devDependencies": {
+    "serverless-domain-manager": "^8.0.0"
+  }
+}

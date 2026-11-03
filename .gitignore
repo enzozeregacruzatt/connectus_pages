@@ -1,0 +1,13 @@
+node_modules
+.serverless
+.env*
+test/.env.local
+*.pem
+*.log
+login.sql
+/*.sql
+*.env
+*.cnf
+/clave*
+.DS_Store
+/db_password*

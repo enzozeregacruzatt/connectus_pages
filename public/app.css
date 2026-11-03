@@ -1,0 +1,487 @@
+:root {
+  color-scheme: light;
+  --text: #344767;
+  --muted: #67748e;
+  --border: #dce4ec;
+  --accent: #5db7e5;
+  --accent-soft: rgba(93, 183, 229, 0.14);
+  --surface: #ffffff;
+  --surface-alt: #f7f9fc;
+  --status-bg: #eef3f9;
+  --error: #c0392b;
+  --error-bg: #fdecea;
+  --focus: #344767;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html {
+  background: var(--surface);
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--surface);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 1rem;
+  line-height: 1.45;
+  margin: 0;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  border: 0;
+  clip-path: inset(50%);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+.page {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr);
+  margin: 0 auto;
+  max-width: 72rem;
+  padding: 1rem;
+}
+
+.stack {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.icon {
+  fill: none;
+  flex: none;
+  height: 1em;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  width: 1em;
+}
+
+/* Cabecera */
+
+.hero {
+  background: linear-gradient(135deg, #344767 0%, #416f96 58%, #5db7e5 100%);
+  border-radius: 1rem;
+  box-shadow: 0 12px 32px rgba(52, 71, 103, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.25rem;
+}
+
+/* En la plataforma la píldora es blanca translúcida: sobre la parte clara del degradado no llega a 4,5:1. */
+.hero__eyebrow {
+  align-items: center;
+  align-self: flex-start;
+  background: rgba(52, 71, 103, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  color: #ffffff;
+  display: inline-flex;
+  font-size: 0.75rem;
+  font-weight: 700;
+  gap: 0.5rem;
+  letter-spacing: 0.04em;
+  padding: 0.45rem 0.8rem;
+  text-transform: uppercase;
+}
+
+.hero__title {
+  color: #ffffff;
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1.2;
+  margin-top: 0.75rem;
+}
+
+.hero__limit {
+  align-items: center;
+  background: var(--surface);
+  border-radius: 0.85rem;
+  color: var(--text);
+  display: flex;
+  gap: 0.8rem;
+  padding: 0.85rem 1.1rem;
+}
+
+.hero__limit strong,
+.hero__limit-note {
+  display: block;
+}
+
+.hero__limit-icon {
+  color: var(--accent);
+  font-size: 1.5rem;
+}
+
+.hero__limit-note {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+/* Tarjetas */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  box-shadow: 0 4px 16px rgba(52, 71, 103, 0.06);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.card--narrow {
+  justify-self: center;
+  max-width: 26rem;
+  width: 100%;
+}
+
+.card__body {
+  padding: 1rem;
+}
+
+.card__body--compact {
+  padding-bottom: 0.75rem;
+}
+
+.card__head {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.card__heading {
+  flex: 1 1 auto;
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.card__intro {
+  margin-bottom: 1rem;
+}
+
+.card__icon {
+  align-items: center;
+  background: var(--accent-soft);
+  border-radius: 0.75rem;
+  color: var(--accent);
+  display: flex;
+  flex: 0 0 2.625rem;
+  font-size: 1.25rem;
+  height: 2.625rem;
+  justify-content: center;
+}
+
+.card__title {
+  font-size: 1.125rem;
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+}
+
+#login-title {
+  margin-bottom: 0.75rem;
+}
+
+/* Formularios */
+
+.filters {
+  align-items: end;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(11rem, 100%), 1fr));
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.field__label {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.field__static {
+  align-items: center;
+  display: flex;
+  font-weight: 600;
+  min-height: 2.75rem;
+  overflow-wrap: anywhere;
+}
+
+/* El gris de borde del resto de la página (#dce4ec) no llega al 3:1 que AA pide a un control. */
+.control {
+  background: var(--surface);
+  border: 1px solid var(--muted);
+  border-radius: 0.7rem;
+  color: var(--text);
+  font: inherit;
+  max-width: 100%;
+  min-height: 2.75rem;
+  min-width: 0;
+  padding: 0.5rem 0.75rem;
+  width: 100%;
+}
+
+.control::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.control:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 0.2rem rgba(93, 183, 229, 0.2);
+}
+
+.control[aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+.button {
+  background: var(--text);
+  border: 1px solid var(--text);
+  border-radius: 0.7rem;
+  color: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  min-height: 2.75rem;
+  padding: 0.5rem 1.25rem;
+}
+
+.button:hover:not(:disabled) {
+  background: #416f96;
+  border-color: #416f96;
+}
+
+.button--secondary {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.button--secondary:hover:not(:disabled) {
+  background: var(--status-bg);
+  border-color: var(--text);
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/*
+ * Los avisos vacíos quedan en el árbol, sin alto: una región aria-live oculta con display:none
+ * no se anuncia al recibir texto.
+ */
+.notice:not(:empty) {
+  border-radius: 0.6rem;
+  font-size: 0.875rem;
+  margin-top: 0.75rem;
+  padding: 0.6rem 0.8rem;
+}
+
+#load-notice,
+#login-status:not(:empty),
+#search-status:not(:empty) {
+  background: var(--status-bg);
+}
+
+.notice--error:not(:empty) {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+/*
+ * Sin JS en línea, nada distingue si app.js falló o solo tarda, así que el aviso parte en index.html, con un texto cierto en los
+ * dos casos, y app.js lo oculta al arrancar. Espera un poco para no asomarse en una carga normal.
+ */
+#load-notice {
+  animation: load-notice-appears 0s linear 3s both;
+}
+
+@keyframes load-notice-appears {
+  from {
+    visibility: hidden;
+  }
+
+  to {
+    visibility: visible;
+  }
+}
+
+/* Sin JavaScript ya habla el <noscript>. */
+@media (scripting: none) {
+  #load-notice {
+    display: none;
+  }
+}
+
+/* Resultados */
+
+[aria-busy="true"] .table-wrap {
+  opacity: 0.55;
+}
+
+.table-wrap {
+  border-top: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.table-wrap:focus-visible {
+  outline-offset: -3px;
+}
+
+.sms-table {
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  width: 100%;
+}
+
+/* Texto principal y no secundario: #67748e sobre este fondo queda bajo 4,5:1. */
+.sms-table th {
+  background: var(--surface-alt);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 0.75rem 1rem;
+  text-align: left;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.sms-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.75rem 1rem;
+  vertical-align: top;
+}
+
+.sms-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.sms-table__date {
+  white-space: nowrap;
+}
+
+.sms-table__number {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.sms-table__message {
+  max-width: 27rem;
+  min-width: 16rem;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+  word-break: break-word;
+}
+
+.sms-table__delivery {
+  max-width: 16rem;
+  min-width: 8rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.sms-table__none {
+  color: var(--muted);
+}
+
+.status-pill {
+  background: var(--status-bg);
+  border-radius: 999px;
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.35rem 0.7rem;
+  white-space: nowrap;
+}
+
+.pager {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+}
+
+@media (min-width: 48rem) {
+  .page {
+    gap: 1.25rem;
+    padding: 1.5rem;
+  }
+
+  .hero {
+    align-items: center;
+    flex-direction: row;
+    justify-content: space-between;
+    padding: 1.75rem 2rem;
+  }
+
+  .hero__title {
+    font-size: 2rem;
+  }
+
+  .hero__limit {
+    flex-shrink: 0;
+    min-width: 13rem;
+  }
+
+  .card__body {
+    padding: 1.5rem;
+  }
+
+  .card__body--compact {
+    padding-bottom: 1rem;
+  }
+
+  .sms-table th,
+  .sms-table td {
+    padding-left: 1.25rem;
+    padding-right: 1.25rem;
+  }
+
+  .pager {
+    padding: 1rem 1.5rem;
+  }
+}

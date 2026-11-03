@@ -1,0 +1,159 @@
+service: connectus-pages
+
+frameworkVersion: '4'
+
+provider:
+  name: aws
+  stage: prod
+  runtime: nodejs22.x
+  region: us-west-2
+  endpointType: regional
+  memorySize: 256
+  # Mayor que la suma de los topes de una búsqueda (12 s de MAX_EXECUTION_TIME) más el arranque en frío (Parameter Store y
+  # TLS), y menor que los 29 s de API Gateway. src/handler.js responde 2 s antes de que venza, y su plazo por omisión lo asume.
+  timeout: 25
+  logRetentionInDays: 30
+  environment:
+    STAGE: prod
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - ssm:GetParameters
+          Resource:
+            - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/connectus-pages/prod/*
+
+functions:
+  app:
+    handler: src/handler.app
+    reservedConcurrency: 5
+    events:
+      - http:
+          path: /
+          method: any
+      - http:
+          path: /{proxy+}
+          method: any
+
+# El throttling primero: si el dominio falla, por ejemplo sin create_domain, los hooks se detienen y la etapa quedaría sin él.
+plugins:
+  - ./scripts/throttling_etapa.js
+  - serverless-domain-manager
+
+custom:
+  stageThrottling:
+    rateLimit: 20
+    burstLimit: 40
+  customDomain:
+    domainName: ${env:PAGES_DOMAIN_NAME}
+    certificateArn: ${env:PAGES_CERTIFICATE_ARN}
+    basePath: ''
+    stage: prod
+    createRoute53Record: true
+    endpointType: regional
+
+package:
+  patterns:
+    - '!**'
+    - src/**
+    - public/**
+    - node_modules/**
+    - '!test/**'
+    - '!docs/**'
+    - '!sql/**'
+    - '!scripts/**'
+    - '!.env*'
+
+resources:
+  Resources:
+    LoginRateLimitAcl:
+      Type: AWS::WAFv2::WebACL
+      Properties:
+        Name: connectus-pages-prod
+        Scope: REGIONAL
+        DefaultAction:
+          Allow: {}
+        VisibilityConfig:
+          SampledRequestsEnabled: true
+          CloudWatchMetricsEnabled: true
+          MetricName: connectus-pages-prod
+        CustomResponseBodies:
+          too_many_attempts:
+            ContentType: APPLICATION_JSON
+            Content: '{"error":"too_many_requests","message":"Demasiados intentos. Inténtalo de nuevo en unos minutos."}'
+          too_many_requests:
+            ContentType: APPLICATION_JSON
+            Content: '{"error":"too_many_requests","message":"Demasiadas peticiones. Inténtalo de nuevo en unos minutos."}'
+        Rules:
+          - Name: login-por-ip
+            Priority: 0
+            Action:
+              Block:
+                CustomResponse:
+                  ResponseCode: 429
+                  CustomResponseBodyKey: too_many_attempts
+            VisibilityConfig:
+              SampledRequestsEnabled: true
+              CloudWatchMetricsEnabled: true
+              MetricName: connectus-pages-prod-login-por-ip
+            Statement:
+              RateBasedStatement:
+                AggregateKeyType: IP
+                EvaluationWindowSec: 300
+                Limit: 30
+                ScopeDownStatement:
+                  AndStatement:
+                    Statements:
+                      - ByteMatchStatement:
+                          FieldToMatch:
+                            Method: {}
+                          PositionalConstraint: EXACTLY
+                          SearchString: POST
+                          TextTransformations:
+                            - Priority: 0
+                              Type: NONE
+                      # ENDS_WITH porque el endpoint por defecto de API Gateway antepone la etapa a la ruta.
+                      - ByteMatchStatement:
+                          FieldToMatch:
+                            UriPath: {}
+                          PositionalConstraint: ENDS_WITH
+                          SearchString: /api/login
+                          TextTransformations:
+                            - Priority: 0
+                              Type: URL_DECODE
+                            - Priority: 1
+                              Type: NORMALIZE_PATH
+          # Sobre todas las rutas: sin esto, una sola IP con GET /app.js agota el throttling de la etapa, que no distingue clientes.
+          - Name: general-por-ip
+            Priority: 1
+            Action:
+              Block:
+                CustomResponse:
+                  ResponseCode: 429
+                  CustomResponseBodyKey: too_many_requests
+            VisibilityConfig:
+              SampledRequestsEnabled: true
+              CloudWatchMetricsEnabled: true
+              MetricName: connectus-pages-prod-general-por-ip
+            Statement:
+              RateBasedStatement:
+                AggregateKeyType: IP
+                EvaluationWindowSec: 300
+                Limit: 1500
+    LoginRateLimitAclAssociation:
+      Type: AWS::WAFv2::WebACLAssociation
+      # La etapa la crea el Deployment, cuyo id lógico cambia en cada despliegue. Sin esto, en el primer despliegue la
+      # asociación podría crearse antes que la etapa y fallar.
+      DependsOn: ApiGatewayDeployment${sls:instanceId}
+      Properties:
+        WebACLArn:
+          Fn::GetAtt:
+            - LoginRateLimitAcl
+            - Arn
+        ResourceArn:
+          Fn::Join:
+            - ''
+            - - arn:aws:apigateway:${aws:region}::/restapis/
+              - Ref: ApiGatewayRestApi
+              - /stages/prod
