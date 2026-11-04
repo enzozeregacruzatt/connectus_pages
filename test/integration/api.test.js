@@ -9,7 +9,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { after, before, describe, it } = require('node:test');
+const { after, before, describe, it, mock } = require('node:test');
 const mysql = require('mysql2/promise');
 
 const { createApp } = require('../../src/app');
@@ -17,20 +17,35 @@ const { LOGIN_FAILURE_FLOOR_MS, hashPassword } = require('../../src/auth');
 const { loadConfig } = require('../../src/config');
 const { createDb } = require('../../src/db');
 const { createHandler } = require('../../src/handler');
+const { signLink } = require('../../src/link');
 const { adminConnectionOptions, loadTestEnv, localConfigEnv } = require('./support/test_env');
 
 const CREAR_LOGIN = path.join(__dirname, '..', '..', 'scripts', 'crear_login.js');
 const CREAR_LOGIN_TERMINAL = path.join(__dirname, 'support', 'crear_login_terminal.py');
 const TERMINAL_MYSQL_P = path.join(__dirname, 'support', 'terminal_mysql_p.py');
 const LOGIN_FAILED_MESSAGE = 'Usuario o contraseña incorrectos, o acceso bloqueado temporalmente.';
+const INVALID_LINK_BODY = {
+  error: 'invalid_link',
+  message: 'Este enlace no es válido o venció. Pide uno nuevo a tu contacto de Connectus.',
+};
 const THROWAWAY_PASSWORD = 'clave-desechable-de-la-prueba';
-const THROWAWAY_USERS = ['api_bloqueo', 'api_revocar', 'api_cuentas', 'api_expulsar', 'api_cambio_clave'];
+const THROWAWAY_USERS = [
+  'api_bloqueo',
+  'api_revocar',
+  'api_cuentas',
+  'api_expulsar',
+  'api_cambio_clave',
+  'api_revocar_enlace',
+  'api_clave_y_enlace',
+];
 const CREATED_BY_SCRIPT_USERS = ['api_script_generada', 'api_script_canalizada', 'api_script_terminal', 'api_script_no_permitida'];
 
 // Fuera del mes del fixture, con ids mayores y en orden, para que no cambien los datos de otras pruebas.
 const BOUNDARY_NUMBER = 56900000555;
 // Una fecha fija, con el mes del fixture ya bien atrás: si no, estas pruebas cambiarían de rama según el día en que corran.
 const FIXED_NOW = '2026-11-20T15:00:00Z';
+// Vigente y bajo el tope de 365 días para todos los relojes fijos de estas pruebas.
+const LINK_EXP = Date.parse('2027-03-01T00:00:00Z') / 1000;
 const BOUNDARY_ROWS = [
   { id: 40001, createdAt: '2026-11-09 23:59:59', inside: false },
   { id: 40002, createdAt: '2026-11-10 00:00:00', inside: true },
@@ -67,12 +82,20 @@ describe('API contra el mysqld desechable', () => {
     return createHandler(async () => app);
   }
 
-  async function postLogin(username, password, using = handler) {
+  async function linkOf(username, overrides = {}) {
+    const [[row]] = await admin.query('SELECT id, link_version FROM connectus_pages.login WHERE username = ?', [username]);
+    return signLink(
+      { slot: 'a', loginId: row.id, linkVersion: row.link_version, exp: LINK_EXP, ...overrides },
+      config.linkSecrets.a
+    );
+  }
+
+  async function postLogin(username, password, using = handler, link = null) {
     return using(restEvent({
       httpMethod: 'POST',
       path: '/api/login',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ link: link ?? await linkOf(username), username, password }),
     }));
   }
 
@@ -147,9 +170,9 @@ describe('API contra el mysqld desechable', () => {
     }
     for (const { id, createdAt } of BOUNDARY_ROWS) {
       await admin.query(
-        'INSERT INTO dbconnectus.sms_outgoing (id, id_account, status, dst_number, sms_content, created_at) '
-        + "VALUES (?, 101, 'DELIVRD', ?, ?, ?)",
-        [id, BOUNDARY_NUMBER, `Borde ${id}`, createdAt]
+        'INSERT INTO dbconnectus.sms_outgoing (id, id_unique, id_account, status, src_number, dst_number, sms_content, created_at) '
+        + "VALUES (?, MD5(?), 101, 'DELIVRD', 1000, ?, ?, ?)",
+        [id, id, BOUNDARY_NUMBER, `Borde ${id}`, createdAt]
       );
     }
   });
@@ -211,18 +234,162 @@ describe('API contra el mysqld desechable', () => {
     assert.ok(state.last_login_at);
   });
 
-  it('usuario inexistente: el mismo 401, y login_fail sin id_login', async () => {
-    const countAnonymousFailures = async () => {
-      const [[{ n }]] = await admin.query(
-        "SELECT COUNT(*) AS n FROM connectus_pages.audit_log WHERE action = 'login_fail' AND id_login IS NULL"
-      );
-      return Number(n);
+  async function auditOf(id, action, detail) {
+    const [[{ n }]] = await admin.query(
+      'SELECT COUNT(*) AS n FROM connectus_pages.audit_log WHERE id_login = ? AND action = ? AND detail = ?',
+      [id, action, detail]
+    );
+    return Number(n);
+  }
+
+  function quietly() {
+    const spy = mock.method(console, 'error', () => {});
+    return () => {
+      const lines = spy.mock.calls.map((call) => call.arguments.join(' '));
+      spy.mock.restore();
+      return lines;
     };
-    const countBefore = await countAnonymousFailures();
-    const response = await postLogin('no_existe_en_la_base', 'cualquier-clave');
-    assert.equal(response.statusCode, 401);
-    assert.deepEqual(JSON.parse(response.body), { error: 'invalid_credentials', message: LOGIN_FAILED_MESSAGE });
-    assert.equal(await countAnonymousFailures(), countBefore + 1);
+  }
+
+  it('un usuario que no calza con el enlace: el mismo 401, sin sumar fallos, y login_fail con usuario_no_coincide', async () => {
+    const id = loginIds.get('api_cuentas');
+    const before = await auditOf(id, 'login_fail', 'usuario_no_coincide');
+    const stop = quietly();
+    for (const username of ['no_existe_en_la_base', 'demo']) {
+      const response = await postLogin(username, 'cualquier-clave', handler, await linkOf('api_cuentas'));
+      assert.equal(response.statusCode, 401);
+      assert.deepEqual(JSON.parse(response.body), { error: 'invalid_credentials', message: LOGIN_FAILED_MESSAGE });
+    }
+    const logged = stop();
+    assert.equal(await auditOf(id, 'login_fail', 'usuario_no_coincide'), before + 2);
+    assert.equal((await loginState('api_cuentas')).failed_attempts, 0);
+    assert.equal((await loginState('demo')).failed_attempts, 0);
+    assert.deepEqual(logged, Array(2).fill('{"event":"link_suspect","detail":"usuario_no_coincide"}'));
+  });
+
+  it('el usuario se compara con la intercalación de la columna: DEMO entra igual que demo', async () => {
+    const response = await postLogin('DEMO', env.demoPassword, handler, await linkOf('demo'));
+    assert.equal(response.statusCode, 200);
+    assert.equal(JSON.parse(response.body).accounts.length, 2);
+  });
+
+  it('el enlace que deja scripts/mysql_prueba.sh en test/.env.local entra por el backend real', async () => {
+    const now = handlerAt(new Date().toISOString());
+    const response = await postLogin('demo', env.demoPassword, now, env.demoLink);
+    assert.equal(response.statusCode, 200);
+  });
+
+  it('revocar el enlace rige en la petición siguiente, sin scrypt ni fallo, y no corta la sesión abierta', async () => {
+    const username = 'api_revocar_enlace';
+    const id = loginIds.get(username);
+    const params = { account: '101', start: '2026-10-10', end: '2026-10-10' };
+    const oldLink = await linkOf(username);
+    const token = await tokenFor(username, THROWAWAY_PASSWORD);
+
+    await admin.query('UPDATE connectus_pages.login SET link_version = link_version + 1 WHERE username = ?', [username]);
+
+    const before = await auditOf(id, 'login_fail', 'enlace_revocado');
+    const stop = quietly();
+    const scrypt = mock.method(crypto, 'scrypt');
+    const rejected = await postLogin(username, THROWAWAY_PASSWORD, handler, oldLink);
+    const scryptCalls = scrypt.mock.callCount();
+    scrypt.mock.restore();
+    const logged = stop();
+
+    assert.equal(rejected.statusCode, 401);
+    assert.deepEqual(JSON.parse(rejected.body), INVALID_LINK_BODY);
+    assert.equal(scryptCalls, 0);
+    assert.equal(await auditOf(id, 'login_fail', 'enlace_revocado'), before + 1);
+    assert.equal((await loginState(username)).failed_attempts, 0);
+    assert.deepEqual(logged, ['{"event":"link_suspect","detail":"enlace_revocado"}']);
+
+    assert.equal((await getSms(token, params)).statusCode, 200, 'la sesión abierta sigue hasta su vencimiento');
+    assert.equal((await postLogin(username, THROWAWAY_PASSWORD)).statusCode, 200, 'el enlace con la versión nueva entra');
+  });
+
+  it('cambiar la clave no rompe el enlace: sube token_version y no link_version', async () => {
+    const username = 'api_clave_y_enlace';
+    const link = await linkOf(username);
+    const [[before]] = await admin.query('SELECT token_version, link_version FROM connectus_pages.login WHERE username = ?', [username]);
+    const newPassword = `${THROWAWAY_PASSWORD}-otra`;
+    await admin.query('UPDATE connectus_pages.login SET password_hash = ? WHERE username = ?', [await hashPassword(newPassword), username]);
+    const [[after]] = await admin.query('SELECT token_version, link_version FROM connectus_pages.login WHERE username = ?', [username]);
+    assert.equal(after.token_version, before.token_version + 1);
+    assert.equal(after.link_version, before.link_version);
+    assert.equal((await postLogin(username, newPassword, handler, link)).statusCode, 200);
+  });
+
+  it('login_ok deja la ranura, la versión y la fecha del enlace, sin la firma', async () => {
+    const username = 'api_clave_y_enlace';
+    const id = loginIds.get(username);
+    await admin.query('UPDATE connectus_pages.login SET password_hash = ? WHERE username = ?', [await hashPassword(THROWAWAY_PASSWORD), username]);
+    const link = await linkOf(username);
+    assert.equal((await postLogin(username, THROWAWAY_PASSWORD, handler, link)).statusCode, 200);
+    const [[row]] = await admin.query(
+      "SELECT detail FROM connectus_pages.audit_log WHERE id_login = ? AND action = 'login_ok' ORDER BY id DESC LIMIT 1",
+      [id]
+    );
+    assert.equal(row.detail, 'enlace a v0 vence 2027-03-01');
+    const [[{ leaks }]] = await admin.query(
+      'SELECT COUNT(*) AS leaks FROM connectus_pages.audit_log WHERE detail LIKE ?',
+      [`%${link.split('.')[5]}%`]
+    );
+    assert.equal(Number(leaks), 0);
+  });
+
+  it('un enlace de otro secreto, vencido o sobre el tope se rechaza sin auditar', async () => {
+    const id = loginIds.get('api_cuentas');
+    const auditRows = async () => {
+      const [[row]] = await admin.query('SELECT COUNT(*) AS n FROM connectus_pages.audit_log WHERE id_login = ?', [id]);
+      return Number(row.n);
+    };
+    const before = await auditRows();
+    const nowSeconds = Date.parse(FIXED_NOW) / 1000;
+    const stop = quietly();
+    for (const link of [
+      signLink({ slot: 'a', loginId: id, linkVersion: 0, exp: LINK_EXP }, 'otro-secreto-que-supera-los-32-bytes-de-largo'),
+      signLink({ slot: 'b', loginId: id, linkVersion: 0, exp: LINK_EXP }, config.linkSecrets.a),
+      signLink({ slot: 'a', loginId: id, linkVersion: 0, exp: nowSeconds }, config.linkSecrets.a),
+      signLink({ slot: 'a', loginId: id, linkVersion: 0, exp: nowSeconds + 365 * 86400 + 1 }, config.linkSecrets.a),
+    ]) {
+      const response = await postLogin('api_cuentas', THROWAWAY_PASSWORD, handler, link);
+      assert.equal(response.statusCode, 401);
+      assert.deepEqual(JSON.parse(response.body), INVALID_LINK_BODY);
+    }
+    const logged = stop();
+    assert.equal(await auditRows(), before);
+    assert.equal((await loginState('api_cuentas')).failed_attempts, 0);
+    assert.deepEqual(logged.map((line) => JSON.parse(line).reason), ['bad_signature', 'unknown_slot', 'expired', 'too_long']);
+  });
+
+  it('con sin-restriccion, el front real sale sin frame-ancestors, y CORS abre /api solo a Origin: null', async () => {
+    const stop = quietly();
+    const app = createApp({ db, config: { ...config, frameAncestors: 'sin-restriccion', corsOpaque: true }, loginFailureFloorMs: 0 });
+    assert.deepEqual(stop(), ['{"event":"frame_ancestors_open"}']);
+    const open = createHandler(async () => app);
+
+    const page = await open(restEvent({ path: '/' }));
+    assert.doesNotMatch(page.headers['Content-Security-Policy'], /frame-ancestors/);
+    assert.match(page.headers['Content-Security-Policy'], /script-src 'self'/);
+    assert.equal(page.headers['Access-Control-Allow-Origin'], undefined);
+
+    const preflight = await open(restEvent({ httpMethod: 'OPTIONS', path: '/api/login', headers: { Origin: 'null' } }));
+    assert.equal(preflight.statusCode, 204);
+    assert.equal(preflight.headers['Access-Control-Allow-Origin'], 'null');
+
+    const signedIn = await open(restEvent({
+      httpMethod: 'POST',
+      path: '/api/login',
+      headers: { 'Content-Type': 'application/json', Origin: 'null' },
+      body: JSON.stringify({ link: await linkOf('demo', { exp: Math.floor(Date.now() / 1000) + 86400 }), username: 'demo', password: env.demoPassword }),
+    }));
+    assert.equal(signedIn.statusCode, 200);
+    assert.equal(signedIn.headers['Access-Control-Allow-Origin'], 'null');
+    assert.equal(signedIn.headers['Access-Control-Allow-Credentials'], undefined);
+
+    const otherOrigin = await open(restEvent({ path: '/api/sms', headers: { Origin: 'https://otro.example.com' } }));
+    assert.equal(otherOrigin.statusCode, 401);
+    assert.equal(otherOrigin.headers['Access-Control-Allow-Origin'], undefined);
   });
 
   it('inactivo: 401 aunque la clave sea correcta, sin sumar intentos', async () => {
@@ -302,14 +469,17 @@ describe('API contra el mysqld desechable', () => {
   });
 
   it('una falla de login tarda lo mismo si el usuario existe que si no, con el piso real', async () => {
+    const link = await linkOf('api_cambio_clave');
     const timed = async (username) => {
       const startedAt = performance.now();
-      const response = await postLogin(username, 'clave-incorrecta', handlerAt(FIXED_NOW, LOGIN_FAILURE_FLOOR_MS));
+      const response = await postLogin(username, 'clave-incorrecta', handlerAt(FIXED_NOW, LOGIN_FAILURE_FLOOR_MS), link);
       assert.equal(response.statusCode, 401);
       return performance.now() - startedAt;
     };
+    const stop = quietly();
     const existing = await timed('api_cambio_clave');
     const missing = await timed('no_existe_en_la_base');
+    stop();
     assert.ok(existing >= LOGIN_FAILURE_FLOOR_MS - 1, `el existente tardó ${existing} ms`);
     assert.ok(missing >= LOGIN_FAILURE_FLOOR_MS - 1, `el inexistente tardó ${missing} ms`);
     assert.ok(Math.abs(existing - missing) < 100, `diferencia de ${Math.abs(existing - missing)} ms`);
@@ -369,8 +539,8 @@ describe('API contra el mysqld desechable', () => {
       values.push([id, 101, `${day} 12:${String(index % 60).padStart(2, '0')}:00`, `Atrasada ${id}`]);
     }
     await admin.query(
-      'INSERT INTO dbconnectus.sms_outgoing (id, id_account, created_at, sms_content, dst_number) VALUES ?',
-      [values.map((row) => [...row, BOUNDARY_NUMBER])]
+      'INSERT INTO dbconnectus.sms_outgoing (id, id_account, created_at, sms_content, dst_number, id_unique, src_number) VALUES ?',
+      [values.map((row) => [...row, BOUNDARY_NUMBER, `borde${row[0]}`, 1000])]
     );
     try {
       const token = await tokenFor('demo', env.demoPassword, today);
@@ -502,6 +672,28 @@ describe('API contra el mysqld desechable', () => {
     assert.equal(items.find((item) => item.content === 'Mensaje de prueba 9002').delivery, null);
   });
 
+  it('deliveryId es el id_unique de un envío SMS de la cuenta; de otro producto solo queda el nombre', async () => {
+    const token = await tokenFor('demo', env.demoPassword);
+    const itemOf = async (id) => {
+      const [[row]] = await admin.query('SELECT DATE(created_at) AS day, dst_number FROM dbconnectus.sms_outgoing WHERE id = ?', [id]);
+      const { items } = await walkAllPages(token, { account: '101', start: row.day, end: row.day, dst: row.dst_number });
+      return items.find((item) => item.content === `Mensaje de prueba ${id}`);
+    };
+    const [[{ id_unique: smsDelivery }]] = await admin.query('SELECT id_unique FROM dbconnectus.delivery WHERE id = 8');
+
+    const sms = await itemOf(20000);
+    assert.equal(sms.delivery, 'Envío chico con link único');
+    assert.equal(sms.deliveryId, smsDelivery);
+
+    const otherProduct = await itemOf(20300);
+    assert.equal(otherProduct.delivery, 'Envío de otro producto');
+    assert.equal(otherProduct.deliveryId, null);
+
+    const otherAccount = await itemOf(9002);
+    assert.equal(otherAccount.delivery, null);
+    assert.equal(otherAccount.deliveryId, null);
+  });
+
   it('las fechas y etiquetas coinciden con la base, también con estado NULL', async () => {
     const token = await tokenFor('demo', env.demoPassword);
     const start = '2026-10-15';
@@ -521,7 +713,9 @@ describe('API contra el mysqld desechable', () => {
       ['QUEUED', 'Encolado'],
       ['OUTBALANCE', 'Sin saldo'],
       ['ESME_RTHROTTLED', 'No entregable'],
+      ['ESME_RINVDSTADR', 'No entregable'],
       ['ESTADO_DESCONOCIDO', 'Sin información'],
+      ['EXPIRED', 'Sin información'],
       [null, 'Sin información'],
     ]);
     const seen = new Set();

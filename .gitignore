@@ -11,3 +11,7 @@ login.sql
 /clave*
 .DS_Store
 /db_password*
+/worker_db_password*
+/token_secret*
+/link_secret*
+/enlace*

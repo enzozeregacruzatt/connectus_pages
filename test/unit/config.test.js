@@ -8,6 +8,8 @@ const { test } = require('node:test');
 const { loadConfig } = require('../../src/config');
 
 const LONG_SECRET = 's'.repeat(32);
+const LINK_SECRET_A = 'a'.repeat(32);
+const LINK_SECRET_B = 'b'.repeat(32);
 const PREFIX = '/connectus-pages/prod/';
 
 function parameters(overrides = {}) {
@@ -17,6 +19,7 @@ function parameters(overrides = {}) {
     db_password: 'clave-falsa',
     token_secret: LONG_SECRET,
     frame_ancestors: 'https://embed.example.com',
+    link_secret_a: LINK_SECRET_A,
     ...overrides,
   };
   return Object.entries(values)
@@ -32,9 +35,12 @@ const localEnv = (overrides = {}) => ({
   DB_PASSWORD: 'clave-falsa',
   DB_SSL_CA_FILE: '/ruta/ca.pem',
   TOKEN_SECRET: LONG_SECRET,
+  LINK_SECRET_A,
   FRAME_ANCESTORS: 'http://127.0.0.1:8788',
   ...overrides,
 });
+
+const loadFromStore = (overrides) => loadConfig({ env: { STAGE: 'prod' }, fetchParameters: async () => parameters(overrides) });
 
 test('fuera de local lee Parameter Store bajo el prefijo del contrato', async () => {
   const requested = [];
@@ -46,12 +52,16 @@ test('fuera de local lee Parameter Store bajo el prefijo del contrato', async ()
     },
   });
   assert.deepEqual(requested.sort(), [
+    `${PREFIX}cors_opaque`,
     `${PREFIX}db_host`,
     `${PREFIX}db_password`,
     `${PREFIX}db_user`,
     `${PREFIX}frame_ancestors`,
+    `${PREFIX}link_secret_a`,
+    `${PREFIX}link_secret_b`,
     `${PREFIX}token_secret`,
   ]);
+  assert.ok(requested.length <= 10, 'GetParameters admite hasta 10 nombres');
   assert.equal(config.stage, 'prod');
   assert.deepEqual(config.db, { host: 'db.invalid', port: 3306, user: 'pages_app', password: 'clave-falsa' });
   assert.equal(config.tokenSecret, LONG_SECRET);
@@ -132,7 +142,9 @@ test('STAGE=local usa las variables de entorno y no llama a Parameter Store', as
     stage: 'local',
     db: { host: '127.0.0.1', port: 33077, user: 'pages_app', password: 'clave-falsa', sslCaFile: '/ruta/ca.pem' },
     tokenSecret: LONG_SECRET,
+    linkSecrets: { a: LINK_SECRET_A },
     frameAncestors: 'http://127.0.0.1:8788',
+    corsOpaque: false,
   });
 });
 
@@ -144,6 +156,55 @@ for (const name of ['DB_HOST', 'DB_PORT', 'DB_USER', 'DB_PASSWORD', 'DB_SSL_CA_F
 
 test('en local, un puerto que no es número no arranca', async () => {
   await assert.rejects(loadConfig({ env: localEnv({ DB_PORT: 'abc' }) }), { code: 'config_invalid_port' });
+});
+
+test('sin ninguna ranura de enlace la app no arranca', async () => {
+  await assert.rejects(loadFromStore({ link_secret_a: undefined }), { code: 'config_missing_parameter' });
+  await assert.rejects(loadConfig({ env: localEnv({ LINK_SECRET_A: undefined }) }), { code: 'config_missing_variable' });
+  await assert.rejects(loadConfig({ env: localEnv({ LINK_SECRET_A: '' }) }), { code: 'config_missing_variable' });
+});
+
+test('arranca con una sola ranura, sea cual sea, y con las dos', async () => {
+  assert.deepEqual((await loadFromStore({})).linkSecrets, { a: LINK_SECRET_A });
+  assert.deepEqual((await loadFromStore({ link_secret_a: undefined, link_secret_b: LINK_SECRET_B })).linkSecrets, { b: LINK_SECRET_B });
+  assert.deepEqual((await loadFromStore({ link_secret_b: LINK_SECRET_B })).linkSecrets, { a: LINK_SECRET_A, b: LINK_SECRET_B });
+  const local = await loadConfig({ env: localEnv({ LINK_SECRET_A: undefined, LINK_SECRET_B }) });
+  assert.deepEqual(local.linkSecrets, { b: LINK_SECRET_B });
+});
+
+for (const [label, overrides, code] of [
+  ['una ranura corta', { link_secret_a: 'a'.repeat(31) }, 'config_link_secret_too_short'],
+  ['la otra ranura corta', { link_secret_b: 'b'.repeat(31) }, 'config_link_secret_too_short'],
+  ['las ranuras iguales', { link_secret_b: LINK_SECRET_A }, 'config_link_secrets_equal'],
+  ['la ranura a igual a token_secret', { link_secret_a: LONG_SECRET }, 'config_link_secret_reused'],
+  ['la ranura b igual a token_secret', { link_secret_b: LONG_SECRET }, 'config_link_secret_reused'],
+]) {
+  test(`con ${label} la app no arranca, y el error no lleva el valor`, async () => {
+    const secrets = Object.values(overrides);
+    const hidesValue = (error) => {
+      assert.equal(error.code, code);
+      assert.equal(secrets.some((secret) => error.message.includes(secret)), false);
+      return true;
+    };
+    await assert.rejects(loadFromStore(overrides), hidesValue);
+    const env = Object.fromEntries(Object.entries(overrides).map(([name, value]) => [name.toUpperCase(), value]));
+    await assert.rejects(loadConfig({ env: localEnv(env) }), hidesValue);
+  });
+}
+
+test('el largo de la ranura se mide en bytes', async () => {
+  const config = await loadFromStore({ link_secret_a: 'ñ'.repeat(16) });
+  assert.equal(Buffer.byteLength(config.linkSecrets.a), 32);
+});
+
+test('cors_opaque se enciende solo con on exacto', async () => {
+  assert.equal((await loadFromStore({})).corsOpaque, false);
+  for (const value of ['ON', 'on ', ' on', 'true', '1', 'off', '']) {
+    assert.equal((await loadFromStore({ cors_opaque: value })).corsOpaque, false, `valor ${JSON.stringify(value)}`);
+    assert.equal((await loadConfig({ env: localEnv({ CORS_OPAQUE: value }) })).corsOpaque, false);
+  }
+  assert.equal((await loadFromStore({ cors_opaque: 'on' })).corsOpaque, true);
+  assert.equal((await loadConfig({ env: localEnv({ CORS_OPAQUE: 'on' }) })).corsOpaque, true);
 });
 
 test('cargar los módulos no carga el SDK de AWS', () => {

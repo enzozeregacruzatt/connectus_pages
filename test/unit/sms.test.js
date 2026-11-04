@@ -104,7 +104,7 @@ test('la consulta acota por id por los dos lados y pide 51 filas', async () => {
   const db = createFakeDb({ sms: [smsRow(1)] });
   await search(db);
   const { sql, params } = db.calls[1];
-  assert.match(sql, /^SELECT \/\*\+ MAX_EXECUTION_TIME\(8000\) \*\/ id, id_delivery, dst_number, sms_content, status, created_at FROM connectus_pages\.sms WHERE id_account = \? AND id > \? AND id <= \? AND created_at BETWEEN \? AND \? ORDER BY id DESC LIMIT 51$/);
+  assert.match(sql, /^SELECT \/\*\+ MAX_EXECUTION_TIME\(8000\) \*\/ id, id_delivery, dst_number, sms_content, status, created_at FROM connectus_pages\.sms_de_cuenta WHERE id_account = \? AND id > \? AND id <= \? AND created_at BETWEEN \? AND \? ORDER BY id DESC LIMIT 51$/);
   assert.deepEqual(params, [101, 0, 1, '2026-10-05 00:00:00', '2026-10-10 23:59:59']);
   assert.ok(params.every((param) => ['number', 'string'].includes(typeof param)));
   assert.equal(typeof params[1], 'number');
@@ -115,6 +115,7 @@ test('el número viaja como parámetro numérico y el cursor al final', async ()
   const db = createFakeDb({ sms: [smsRow(5)] });
   await search(db, { dst: '56900000001', cursor: 10 });
   const { sql, params } = db.calls[1];
+  assert.match(sql, /FROM connectus_pages\.sms_de_numero WHERE id_account = \?/);
   assert.match(sql, /AND dst_number = \? AND id < \? ORDER BY id DESC LIMIT 51$/);
   assert.deepEqual(params.slice(-2), [56900000001, 10]);
 });
@@ -133,15 +134,15 @@ test('con 51 filas se muestran 50 y el cursor lleva cifrado el id de la última'
   assert.equal(result.items[0].content, 'Mensaje 51');
   assert.equal(result.items[49].content, 'Mensaje 2');
   assert.notEqual(result.nextCursor, '2');
-  assert.equal(decodeCursor(result.nextCursor, SEARCH.account, CURSOR_SECRET), 2);
-  assert.equal(decodeCursor(result.nextCursor, 102, CURSOR_SECRET), null, 'el cursor está atado a la cuenta');
-  assert.equal(decodeCursor(result.nextCursor, SEARCH.account, `${CURSOR_SECRET}x`), null);
+  assert.equal(decodeCursor(result.nextCursor, `sms:${SEARCH.account}`, CURSOR_SECRET), 2);
+  assert.equal(decodeCursor(result.nextCursor, 'sms:102', CURSOR_SECRET), null, 'el cursor está atado a la cuenta');
+  assert.equal(decodeCursor(result.nextCursor, `sms:${SEARCH.account}`, `${CURSOR_SECRET}x`), null);
 });
 
 test('la forma de cada fila es la del contrato', async () => {
   const db = createFakeDb({
     sms: [smsRow(1, { id_delivery: 7, created_at: '2026-10-10 14:05:33', status: null })],
-    deliveries: [{ id: 7, id_account: 101, name: 'Envío de prueba' }],
+    deliveries: [{ id: 7, id_unique: 'envio-siete', id_account: 101, name: 'Envío de prueba', id_product: 1 }],
   });
   assert.deepEqual(await search(db), {
     items: [{
@@ -150,6 +151,7 @@ test('la forma de cada fila es la del contrato', async () => {
       content: 'Mensaje 1',
       status: 'Sin información',
       delivery: 'Envío de prueba',
+      deliveryId: 'envio-siete',
     }],
     nextCursor: null,
   });
@@ -159,13 +161,40 @@ test('los nombres de envío se piden sin repetir y acotados a la cuenta', async 
   const db = createFakeDb({
     sms: [smsRow(1, { id_delivery: 7 }), smsRow(2, { id_delivery: 7 }), smsRow(3, { id_delivery: 8 })],
     deliveries: [
-      { id: 7, id_account: 101, name: 'Siete' },
-      { id: 8, id_account: 102, name: 'De otra cuenta' },
+      { id: 7, id_unique: 'envio-siete', id_account: 101, name: 'Siete', id_product: 1 },
+      { id: 8, id_unique: 'envio-ocho', id_account: 102, name: 'De otra cuenta', id_product: 1 },
     ],
   });
   const result = await search(db);
+  assert.match(db.calls[2].sql, /^SELECT \/\*\+ MAX_EXECUTION_TIME\(2000\) \*\/ id, id_unique, name, id_product FROM connectus_pages\.delivery WHERE/);
   assert.deepEqual(db.calls[2].params, [[8, 7], 101]);
   assert.deepEqual(result.items.map((item) => item.delivery), [null, 'Siete', 'Siete']);
+  assert.deepEqual(result.items.map((item) => item.deliveryId), [null, 'envio-siete', 'envio-siete']);
+});
+
+test('un envío de otro producto deja el nombre como texto, sin deliveryId', async () => {
+  const db = createFakeDb({
+    sms: [smsRow(1, { id_delivery: 9 })],
+    deliveries: [{ id: 9, id_unique: 'envio-nueve', id_account: 101, name: 'De otro producto', id_product: 2 }],
+  });
+  const [item] = (await search(db)).items;
+  assert.equal(item.delivery, 'De otro producto');
+  assert.equal(item.deliveryId, null);
+});
+
+test('sin envío, nombre y deliveryId son null', async () => {
+  const db = createFakeDb({ sms: [smsRow(1)] });
+  const [item] = (await search(db)).items;
+  assert.equal(item.delivery, null);
+  assert.equal(item.deliveryId, null);
+});
+
+test('sin número va a la vista de la cuenta, y con número a la del número', async () => {
+  for (const [dst, view] of [[null, 'sms_de_cuenta'], ['56900000001', 'sms_de_numero']]) {
+    const db = createFakeDb();
+    await search(db, { dst });
+    assert.ok(db.calls.some(({ sql }) => sql.includes(`FROM connectus_pages.${view} WHERE`)), view);
+  }
 });
 
 test('sin envíos no se consulta la vista delivery', async () => {
@@ -189,7 +218,7 @@ test('una cota de id inesperada no llega a la consulta', async () => {
 const NEAR_MIDNIGHT = { nowMs: Date.parse('2026-11-03T02:00:00Z') };
 
 function usesUpperBound(db) {
-  const smsCall = db.calls.find(({ sql }) => /FROM connectus_pages\.sms WHERE/.test(sql));
+  const smsCall = db.calls.find(({ sql }) => /FROM connectus_pages\.sms_de_cuenta WHERE/.test(sql));
   const uses = /AND id <= \?/.test(smsCall.sql);
   assert.equal(/sms_cutoff_id\(\?\) AS hi/.test(db.calls[0].sql), uses, 'hi solo se calcula si se usa');
   assert.equal(db.calls[0].params.length, uses ? 2 : 1);

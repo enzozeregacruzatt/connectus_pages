@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const { setTimeout: sleep } = require('node:timers/promises');
 const { writeAudit } = require('./db');
+const { verifyLink } = require('./link');
 
 const SCRYPT_N = 32768;
 const SCRYPT_R = 8;
@@ -29,9 +30,11 @@ const MAX_PASSWORD_LENGTH = 256;
 // que superar el peor caso normal en Lambda, donde 256 MB dan menos de un sexto de vCPU para el scrypt.
 const LOGIN_FAILURE_FLOOR_MS = 1500;
 
-const SELECT_LOGIN_BY_USERNAME = 'SELECT id, password_hash, active, token_version, '
+// El usuario se compara en SQL para conservar la intercalación de la columna, igual que un WHERE username = ?.
+const SELECT_LOGIN_OF_LINK = 'SELECT id, password_hash, active, token_version, link_version, '
+  + '(username = ?) AS username_ok, '
   + '(locked_until IS NOT NULL AND locked_until > UTC_TIMESTAMP()) AS locked '
-  + 'FROM connectus_pages.login WHERE username = ? LIMIT 1';
+  + 'FROM connectus_pages.login WHERE id = ? LIMIT 1';
 const SELECT_LOGIN_BY_ID = 'SELECT id, active, token_version FROM connectus_pages.login WHERE id = ? LIMIT 1';
 // MySQL evalúa el SET de izquierda a derecha: locked_until tiene que leer failed_attempts antes de
 // que se reinicie.
@@ -126,7 +129,7 @@ function nowInSeconds(clock) {
   return Math.floor(clock() / 1000);
 }
 
-function parseCredentials(rawBody) {
+function parseLoginBody(rawBody) {
   let parsed;
   try {
     parsed = JSON.parse(rawBody.toString('utf8'));
@@ -134,7 +137,19 @@ function parseCredentials(rawBody) {
     return null;
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-  const { username, password } = parsed;
+  return parsed;
+}
+
+// Un rechazo aquí no toca la base ni calcula un scrypt: sin el enlace, nadie gasta más que esta comparación. Tampoco se audita,
+// porque sería una escritura por petición a voluntad de cualquiera, y el enlace nunca se registra.
+function acceptLink(link, config, clock) {
+  const verified = verifyLink(link, config.linkSecrets, nowInSeconds(clock));
+  if (verified.ok) return verified;
+  console.error(JSON.stringify({ event: 'link_rejected', reason: verified.reason }));
+  return null;
+}
+
+function parseCredentials({ username, password }) {
   if (typeof username !== 'string' || typeof password !== 'string') return null;
   if (!USERNAME_PATTERN.test(username)) return null;
   if (password.length < 1 || password.length > MAX_PASSWORD_LENGTH) return null;
@@ -154,27 +169,48 @@ async function holdFailure(startedAt, floorMs) {
   }
 }
 
-// Devuelve el cuerpo de la respuesta, o null ante cualquier falla, sin distinguir el motivo.
-async function login({ db, config, clock, username, password, ip, failureFloorMs = LOGIN_FAILURE_FLOOR_MS }) {
+// Un enlace bien firmado que no sirve es la señal de que se filtró o quedó viejo: además de la auditoría, va a una alarma.
+async function auditSuspectLink(db, idLogin, detail, ip) {
+  console.error(JSON.stringify({ event: 'link_suspect', detail }));
+  await writeAudit(db, { idLogin, action: 'login_fail', detail, ip });
+}
+
+function linkAuditDetail({ slot, linkVersion, exp }) {
+  return `enlace ${slot} v${linkVersion} vence ${new Date(exp * 1000).toISOString().slice(0, 10)}`;
+}
+
+// Devuelve { session }, o { failure } con el código de error. Un enlace revocado no pasa por el scrypt ni por el piso: dormir
+// retendría un cupo de la Lambda, y no hay nada que esconder, porque se decide antes de mirar al usuario. Un usuario que no calza
+// sí, y no suma un fallo: quien tiene un enlace y prueba otros usuarios no bloquea a nadie.
+async function login({ db, config, clock, link, username, password, ip, failureFloorMs = LOGIN_FAILURE_FLOOR_MS }) {
   const startedAt = performance.now();
-  const [row] = await db.query(SELECT_LOGIN_BY_USERNAME, [username]);
-  const canEnter = Boolean(row) && isActive(row) && Number(row.locked) !== 1;
+  const [row] = await db.query(SELECT_LOGIN_OF_LINK, [username, link.loginId]);
+  if (!row || Number(row.link_version) !== link.linkVersion) {
+    await auditSuspectLink(db, link.loginId, 'enlace_revocado', ip);
+    return { failure: 'invalid_link' };
+  }
+
+  const usernameMatches = Number(row.username_ok) === 1;
+  const canEnter = usernameMatches && isActive(row) && Number(row.locked) !== 1;
   const matches = await verifyPassword(password, canEnter ? row.password_hash : DUMMY_HASH);
 
   if (!canEnter || !matches) {
     if (canEnter) await db.write(REGISTER_FAILURE, [row.id]);
-    await writeAudit(db, { idLogin: row ? row.id : null, action: 'login_fail', ip });
+    if (usernameMatches) await writeAudit(db, { idLogin: row.id, action: 'login_fail', ip });
+    else await auditSuspectLink(db, row.id, 'usuario_no_coincide', ip);
     await holdFailure(startedAt, failureFloorMs);
-    return null;
+    return { failure: 'invalid_credentials' };
   }
 
   await db.write(REGISTER_SUCCESS, [row.id]);
-  const accounts = await db.query(SELECT_ACCOUNTS, [row.id]);
-  await writeAudit(db, { idLogin: row.id, action: 'login_ok', ip });
+  const accounts = await listLoginAccounts(db, row.id);
+  await writeAudit(db, { idLogin: row.id, action: 'login_ok', detail: linkAuditDetail(link), ip });
   return {
-    token: issueToken(Number(row.id), Number(row.token_version), config.tokenSecret, nowInSeconds(clock)),
-    expiresIn: TOKEN_TTL_SECONDS,
-    accounts: accounts.map(({ id, name }) => ({ id: Number(id), name })),
+    session: {
+      token: issueToken(Number(row.id), Number(row.token_version), config.tokenSecret, nowInSeconds(clock)),
+      expiresIn: TOKEN_TTL_SECONDS,
+      accounts: accounts.map(({ id, name }) => ({ id: Number(id), name })),
+    },
   };
 }
 
@@ -191,6 +227,10 @@ async function authenticate({ db, config, clock, authorization }) {
   return claims.loginId;
 }
 
+function listLoginAccounts(db, loginId) {
+  return db.query(SELECT_ACCOUNTS, [loginId]);
+}
+
 async function loginHasAccount(db, loginId, accountId) {
   const rows = await db.query(SELECT_ACCOUNT_MEMBERSHIP, [loginId, accountId]);
   return rows.length > 0;
@@ -200,12 +240,15 @@ module.exports = {
   DUMMY_HASH,
   LOGIN_FAILURE_FLOOR_MS,
   TOKEN_TTL_SECONDS,
+  acceptLink,
   authenticate,
   hashPassword,
   issueToken,
+  listLoginAccounts,
   login,
   loginHasAccount,
   parseCredentials,
+  parseLoginBody,
   verifyPassword,
   verifyToken,
 };

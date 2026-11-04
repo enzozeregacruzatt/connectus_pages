@@ -21,6 +21,8 @@ const fs = require('node:fs');
 const tty = require('node:tty');
 const { parseArgs } = require('node:util');
 
+const { UserError, openTerminal } = require('./terminal');
+
 const USERNAME_RE = /^[A-Za-z0-9._@-]{1,64}$/;
 const ACCOUNT_RE = /^[1-9][0-9]*$/;
 const MAX_ACCOUNT_ID = 2147483647;
@@ -31,8 +33,6 @@ const USAGE = 'Uso: node scripts/crear_login.js --usuario <u> --cuentas 1,2 [--g
 const PIPE_ERROR = 'Sin --generar, la salida no puede ir a un pipe: mysql -p usa la misma terminal y la clave quedaría a la '
   + 'vista. Escribe a un archivo: (umask 077; node scripts/crear_login.js ... > login.sql), luego mysql ... < login.sql y '
   + 'rm login.sql.';
-
-class UserError extends Error {}
 
 function parseCli(argv) {
   let values;
@@ -88,54 +88,8 @@ function buildSql(username, accounts, passwordHash) {
   ].join('\n');
 }
 
-function openTerminal() {
-  let readFd;
-  let writeFd;
-  try {
-    readFd = fs.openSync('/dev/tty', 'r');
-    writeFd = fs.openSync('/dev/tty', 'w');
-  } catch {
-    throw new UserError('No hay una terminal para pedir la clave. Usa --generar.');
-  }
-  const input = new tty.ReadStream(readFd);
-  input.setEncoding('utf8');
-  return {
-    write: (text) => fs.writeSync(writeFd, text),
-    readHidden(prompt) {
-      return new Promise((resolve, reject) => {
-        let value = '';
-        const finish = (settle, result) => {
-          input.removeListener('data', onData);
-          input.setRawMode(false);
-          input.pause();
-          fs.writeSync(writeFd, '\n');
-          settle(result);
-        };
-        const onData = (chunk) => {
-          for (const char of chunk) {
-            if (char === '\r' || char === '\n') return finish(resolve, value);
-            if (char === '\u0003' || char === '\u0004') return finish(reject, new UserError('Cancelado.'));
-            if (char === '\u007f' || char === '\b') value = [...value].slice(0, -1).join('');
-            else if (char === '\u0015') value = '';
-            else if (char >= ' ') value += char;
-          }
-        };
-        // Antes del aviso: lo que se escriba apenas aparece no debe alcanzar a verse en pantalla.
-        input.setRawMode(true);
-        fs.writeSync(writeFd, prompt);
-        input.resume();
-        input.on('data', onData);
-      });
-    },
-    close() {
-      input.destroy();
-      fs.closeSync(writeFd);
-    },
-  };
-}
-
 async function askPassword() {
-  const terminal = openTerminal();
+  const terminal = openTerminal('No hay una terminal para pedir la clave. Usa --generar.');
   try {
     const password = await terminal.readHidden('Clave: ');
     if ([...password].length < MIN_PASSWORD_CHARS) {

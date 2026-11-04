@@ -39,7 +39,10 @@ body {
 
 h1,
 h2,
-p {
+p,
+dl,
+dd,
+ul {
   margin: 0;
 }
 
@@ -153,6 +156,74 @@ p {
   font-size: 0.8rem;
 }
 
+/* El nombre de un envío puede ser largo y sin espacios. */
+.hero__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.hero__title:focus {
+  outline: none;
+}
+
+.hero__subtitle {
+  color: #ffffff;
+  font-size: 0.9rem;
+  margin-top: 0.35rem;
+}
+
+/* Barra de navegación */
+
+.app-bar {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.app-bar__account {
+  flex: 1 1 14rem;
+}
+
+.app-bar__menu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.menu-button,
+.tab-button {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.7rem;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  min-height: 2.75rem;
+  padding: 0.5rem 0.9rem;
+}
+
+.menu-button:hover:not(:disabled),
+.tab-button:hover {
+  background: var(--status-bg);
+}
+
+.menu-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.menu-button[aria-current="page"],
+.tab-button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--text);
+}
+
+.back-button {
+  justify-self: start;
+}
+
 /* Tarjetas */
 
 .card {
@@ -211,6 +282,80 @@ p {
   font-size: 1.125rem;
   font-weight: 700;
   margin-bottom: 0.25rem;
+}
+
+/* Mismo ancho que un filtro de dos columnas: cuatro tarjetas chicas, sin que una quede de franja. */
+.card-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(19rem, 100%), 1fr));
+}
+
+.card__head--wrap {
+  flex-wrap: wrap;
+}
+
+.card__head--wrap .card__heading {
+  flex-basis: 14rem;
+}
+
+.card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.card__actions:not(:has(> :not([hidden]))) {
+  margin-top: 0;
+}
+
+.facts {
+  display: grid;
+  font-size: 0.9rem;
+  gap: 0.4rem 1rem;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  margin-top: 0.5rem;
+  max-width: 34rem;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.sms-bubble {
+  background: var(--status-bg);
+  border-radius: 1rem;
+  margin: 1rem 0 0.5rem;
+  overflow-wrap: anywhere;
+  padding: 0.75rem 1rem;
+  white-space: pre-line;
+}
+
+.progress-bar {
+  display: block;
+  height: 0.75rem;
+  margin-bottom: 0.35rem;
+  width: 100%;
+}
+
+.download-help {
+  background: var(--surface-alt);
+  border-top: 1px solid var(--border);
+  display: grid;
+  font-size: 0.875rem;
+  gap: 0.5rem;
+  justify-items: start;
+  padding: 0.75rem 1rem;
+}
+
+.download-help .field {
+  width: 100%;
 }
 
 #login-title {
@@ -317,10 +462,30 @@ p {
   padding: 0.6rem 0.8rem;
 }
 
+#link-notice,
 #load-notice,
 #login-status:not(:empty),
 #search-status:not(:empty) {
   background: var(--status-bg);
+}
+
+.notice--status:not(:empty) {
+  background: var(--status-bg);
+}
+
+/* Sin aviso, el bloque no suma un espacio entre tarjetas: los avisos vacíos siguen en el árbol, por lo de aria-live. */
+.notices {
+  display: grid;
+  gap: 0.5rem;
+  margin-bottom: -1rem;
+}
+
+.notices:has(.notice:not(:empty)) {
+  margin-bottom: 0;
+}
+
+.notices .notice:not(:empty) {
+  margin-top: 0;
 }
 
 .notice--error:not(:empty) {
@@ -355,13 +520,16 @@ p {
 
 /* Resultados */
 
-[aria-busy="true"] .table-wrap {
+[aria-busy="true"] .table-wrap,
+[aria-busy="true"] > .pager {
   opacity: 0.55;
 }
 
+/* position: un título oculto con position: absolute se saldría del scroll propio y le daría scroll horizontal a la página. */
 .table-wrap {
   border-top: 1px solid var(--border);
   overflow-x: auto;
+  position: relative;
 }
 
 .table-wrap:focus-visible {
@@ -425,6 +593,84 @@ p {
   color: var(--muted);
 }
 
+.sms-table__reason {
+  margin-top: 0.35rem;
+  max-width: 18rem;
+  min-width: 12rem;
+}
+
+.stats-table td,
+.stats-table th {
+  white-space: nowrap;
+}
+
+.stats-table tbody th,
+.stats-table tfoot th {
+  background: var(--surface);
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.stats-table__count {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.stats-table__total,
+.stats-table tfoot td {
+  font-weight: 700;
+}
+
+.stats-table tfoot th,
+.stats-table tfoot td {
+  border-bottom: 0;
+  border-top: 2px solid var(--border);
+}
+
+.tab-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.link-button {
+  background: none;
+  border: 0;
+  color: #416f96;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  padding: 0;
+  text-align: left;
+  text-decoration: underline;
+}
+
+.link-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.icon-button {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 1.1rem;
+  height: 2.25rem;
+  justify-content: center;
+  width: 2.25rem;
+}
+
+.icon-button:hover {
+  background: var(--status-bg);
+}
+
 .status-pill {
   background: var(--status-bg);
   border-radius: 999px;
@@ -433,6 +679,80 @@ p {
   font-weight: 700;
   padding: 0.35rem 0.7rem;
   white-space: nowrap;
+}
+
+/* Los tonos de la plataforma, de fondo: como color de texto, el amarillo y el turquesa no llegan a 4,5:1. */
+.status-pill--info {
+  background: rgba(93, 183, 229, 0.25);
+}
+
+.status-pill--ok {
+  background: rgba(44, 206, 192, 0.28);
+}
+
+.status-pill--warn {
+  background: rgba(255, 193, 7, 0.32);
+}
+
+.status-pill--error {
+  background: rgba(245, 83, 67, 0.22);
+}
+
+.status-pill--muted {
+  background: rgba(102, 116, 142, 0.22);
+}
+
+/* Dona */
+
+.donut {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: center;
+  margin-top: 0.5rem;
+}
+
+.donut__chart {
+  flex: none;
+  height: 9.5rem;
+  width: 9.5rem;
+}
+
+.donut__slice {
+  fill: none;
+  stroke-width: 5;
+}
+
+.donut__total {
+  fill: var(--text);
+  font-size: 4.2px;
+  font-weight: 700;
+}
+
+.donut__legend {
+  display: grid;
+  flex: 1 1 11rem;
+  font-size: 0.82rem;
+  gap: 0.3rem;
+  list-style: none;
+  padding: 0;
+}
+
+.donut__legend li {
+  align-items: center;
+  display: flex;
+  gap: 0.45rem;
+}
+
+.donut__legend strong {
+  margin-left: auto;
+}
+
+.donut__swatch {
+  flex: none;
+  height: 0.7rem;
+  width: 0.7rem;
 }
 
 .pager {

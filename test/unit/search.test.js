@@ -115,7 +115,7 @@ test('la cuenta es obligatoria y debe ser un entero positivo', () => {
 
 test('el cursor debe ser uno emitido por la app para esa cuenta', () => {
   const options = { cursorSecret: CURSOR_SECRET };
-  const valid = encodeCursor(123, 101, CURSOR_SECRET);
+  const valid = encodeCursor(123, 'sms:101', CURSOR_SECRET);
   assert.equal(parseSearch(query({ cursor: [valid] }), options).cursor, 123);
 
   const rejected = [
@@ -132,10 +132,10 @@ test('el cursor debe ser uno emitido por la app para esa cuenta', () => {
     valid.slice(0, -1),
     (valid[0] === 'A' ? 'B' : 'A') + valid.slice(1),
     `${valid.slice(0, -1)}+`,
-    encodeCursor(123, 102, CURSOR_SECRET),
-    encodeCursor(123, 101, `${CURSOR_SECRET}x`),
-    encodeCursor(0, 101, CURSOR_SECRET),
-    encodeCursor(2n ** 60n, 101, CURSOR_SECRET),
+    encodeCursor(123, 'sms:102', CURSOR_SECRET),
+    encodeCursor(123, 'sms:101', `${CURSOR_SECRET}x`),
+    encodeCursor(0, 'sms:101', CURSOR_SECRET),
+    encodeCursor(2n ** 60n, 'sms:101', CURSOR_SECRET),
   ];
   for (const cursor of rejected) {
     const result = parseSearch(query({ cursor: [cursor] }), options);
@@ -145,11 +145,11 @@ test('el cursor debe ser uno emitido por la app para esa cuenta', () => {
 });
 
 test('dos cursores del mismo id no se parecen: no permiten comparar posiciones', () => {
-  assert.notEqual(encodeCursor(123, 101, CURSOR_SECRET), encodeCursor(123, 101, CURSOR_SECRET));
+  assert.notEqual(encodeCursor(123, 'sms:101', CURSOR_SECRET), encodeCursor(123, 'sms:101', CURSOR_SECRET));
 });
 
 test('sin el secreto, un cursor no pasa', () => {
-  assert.equal(parseSearch(query({ cursor: [encodeCursor(123, 101, CURSOR_SECRET)] })).ok, false);
+  assert.equal(parseSearch(query({ cursor: [encodeCursor(123, 'sms:101', CURSOR_SECRET)] })).ok, false);
 });
 
 test('dst deja solo los dígitos, como en la plataforma', () => {

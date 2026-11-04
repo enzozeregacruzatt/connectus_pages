@@ -6,8 +6,10 @@ const path = require('node:path');
 const { test } = require('node:test');
 
 const StageThrottlingPlugin = require('../../scripts/throttling_etapa');
+const { APP_PARAMETERS } = require('../../src/config');
 const { DEADLINE_MARGIN_MS, DEFAULT_DEADLINE_MS } = require('../../src/handler');
 const { searchSms } = require('../../src/sms');
+const { WORKER_PARAMETERS } = require('../../src/worker/config');
 const { createFakeDb } = require('./support/fake_db');
 
 const ROOT = path.join(__dirname, '..', '..');
@@ -156,24 +158,45 @@ test('sin la configuración, el plugin hace fallar el despliegue en vez de dejar
   }
 });
 
+test('.gitignore cubre los secretos y enlaces que se generan a mano en la raíz', () => {
+  const ignored = read('.gitignore').split('\n');
+  for (const pattern of ['/link_secret*', '/enlace*', '/worker_db_password*', '/token_secret*', '/db_password*']) {
+    assert.ok(ignored.includes(pattern), `falta ${pattern}`);
+  }
+});
+
+test('scripts/ no se despliega: crear_enlace.js y el secreto que lee quedan en el computador de quien emite', () => {
+  assert.match(serverlessYml, /- '!scripts\/\*\*'/);
+});
+
 for (const name of ['README.md', 'docs/DISENO.md']) {
   test(`${name} documenta el despliegue limpio y cómo aplicar un cambio de Parameter Store`, () => {
     const text = read(name);
-    const steps = /^1\. `npm ci`\.\n(?:[\s\S]*?\n)?8\. `serverless deploy`.*$/m.exec(text)?.[0];
-    assert.ok(steps, 'la secuencia va de npm ci a serverless deploy, en 8 pasos');
+    const steps = /^1\. `npm ci`\.\n(?:[\s\S]*?\n)?10\. .*`serverless deploy`.*$/m.exec(text)?.[0];
+    assert.ok(steps, 'la secuencia va de npm ci a serverless deploy, en 10 pasos');
     const positions = [
       /us-west-2/,
       /PAGES_DOMAIN_NAME/,
-      /Parameter Store/,
+      /\/connectus-pages\/prod\//,
       /aprovisionar_bd\.sh/,
       /allowed_account/,
       /crear_login\.js/,
+      /crear_enlace\.js/,
       /`serverless create_domain`/,
       /`serverless deploy`/,
     ].map((pattern) => steps.search(pattern));
     assert.ok(positions.every((position) => position >= 0), `falta un paso: ${positions}`);
     assert.deepEqual(positions, [...positions].sort((a, b) => a - b), 'los pasos van en este orden');
     assert.match(text, /aws lambda update-function-configuration/);
+  });
+
+  test(`${name} nombra todos los parámetros que piden los cargadores, y cómo apagar el trabajador`, () => {
+    const text = read(name);
+    for (const parameter of new Set([...APP_PARAMETERS, ...WORKER_PARAMETERS])) {
+      assert.ok(text.includes(`\`${parameter}\``), parameter);
+    }
+    assert.match(text, /PAGES_ALARM_TOPIC_ARN/);
+    assert.match(text, /put-function-concurrency --function-name connectus-pages-prod-worker --reserved-concurrent-executions 0/);
   });
 
   test(`${name} no da a serverless deploy como forma de reciclar contenedores`, () => {
@@ -190,5 +213,90 @@ test('el contrato público no nombra namespaces de la plataforma', () => {
 
 test('un marcador de clave sin comillas no se puede correr a mano', () => {
   assert.match(read('sql/00_cuentas.sql'), /IDENTIFIED BY __PW_OWNER__,/);
-  assert.match(read('sql/00_cuentas.sql'), /IDENTIFIED BY __PW_APP__\n/);
+  assert.match(read('sql/00_cuentas.sql'), /IDENTIFIED BY __PW_APP__,/);
+  assert.match(read('sql/00_cuentas.sql'), /IDENTIFIED BY __PW_WORKER__\n/);
+});
+
+function ssmParametersIn(block) {
+  return [...block.matchAll(/parameter\/connectus-pages\/prod\/(\S*)$/gm)].map(([, name]) => name);
+}
+
+const appIam = /^ {2}iam:\n([\s\S]*?)^functions:/m.exec(serverlessYml)?.[1] ?? '';
+const workerRole = /^ {4}WorkerRole:\n([\s\S]*?)^ {4}# Los eventos van en texto/m.exec(serverlessYml)?.[1] ?? '';
+const workerFunction = /^ {2}worker:\n([\s\S]*?)^# El throttling primero/m.exec(serverlessYml)?.[1] ?? '';
+const bucket = /^ {4}ExportsBucket:\n([\s\S]*?)^ {4}ExportsBucketPolicy:/m.exec(serverlessYml)?.[1] ?? '';
+
+test('la lista de Parameter Store de la app es exactamente lo que pide su cargador, sin comodín', () => {
+  assert.deepEqual(ssmParametersIn(appIam).sort(), [...APP_PARAMETERS].sort());
+  assert.ok(!appIam.includes('prod/*'));
+});
+
+test('la lista de Parameter Store del trabajador es exactamente lo que pide su cargador', () => {
+  assert.deepEqual(ssmParametersIn(workerRole).sort(), [...WORKER_PARAMETERS].sort());
+});
+
+test('el trabajador nunca lee los secretos de sesión ni de enlace, y la app nunca lee la clave del trabajador', () => {
+  for (const name of ssmParametersIn(workerRole)) assert.doesNotMatch(name, /^(token_secret|link_secret_|db_user$|db_password$)/);
+  for (const name of ssmParametersIn(appIam)) assert.doesNotMatch(name, /^worker_/);
+});
+
+test('el rol de la app solo puede leer exports/ de S3', () => {
+  assert.deepEqual([...appIam.matchAll(/^\s+- (s3:\S+)$/gm)].map(([, action]) => action), ['s3:GetObject']);
+  assert.match(appIam, /- \/exports\/\*$/m);
+});
+
+test('el rol del trabajador tiene solo lo que necesita sobre exports/, sin listar el bucket', () => {
+  assert.deepEqual([...workerRole.matchAll(/^\s+- (s3:\S+)$/gm)].map(([, action]) => action).sort(), [
+    's3:AbortMultipartUpload',
+    's3:GetObject',
+    's3:ListMultipartUploadParts',
+    's3:PutObject',
+  ]);
+  assert.match(workerRole, /- \/exports\/\*$/m);
+  assert.doesNotMatch(workerRole, /Action: ['"]?\*|s3:\*|Resource: ['"]?\*/);
+});
+
+test('la función del trabajador corre de a una, con su rol, sin reintentos y una vez por minuto', () => {
+  assert.match(workerFunction, /handler: src\/worker\/handler\.worker\n/);
+  assert.match(workerFunction, /role: WorkerRole\n/);
+  assert.match(workerFunction, /reservedConcurrency: 1\n/);
+  assert.match(workerFunction, /timeout: 900\n/);
+  assert.match(workerFunction, /memorySize: 512\n/);
+  assert.match(workerFunction, /maximumEventAge: 60\n/);
+  assert.match(workerFunction, /maximumRetryAttempts: 0\n/);
+  assert.match(workerFunction, /- schedule: rate\(1 minute\)\n/);
+});
+
+test('el bucket es privado, cifrado, solo con TLS, y expira lo exportado', () => {
+  for (const flag of ['BlockPublicAcls', 'BlockPublicPolicy', 'IgnorePublicAcls', 'RestrictPublicBuckets']) {
+    assert.match(bucket, new RegExp(`${flag}: true\\n`));
+  }
+  assert.match(bucket, /ObjectOwnership: BucketOwnerEnforced\n/);
+  assert.match(bucket, /SSEAlgorithm: AES256\n/);
+  assert.match(bucket, /Prefix: exports\/\n\s+ExpirationInDays: 7\n\s+AbortIncompleteMultipartUpload:\n\s+DaysAfterInitiation: 1\n/);
+  assert.doesNotMatch(bucket, /BucketName:/);
+  assert.match(serverlessYml, /aws:SecureTransport: 'false'/);
+  assert.match(serverlessYml, /EXPORTS_BUCKET:\n\s+Ref: ExportsBucket\n/);
+});
+
+test('cada filtro de métrica depende de su grupo de registros, y cada alarma avisa al mismo tema', () => {
+  const filters = [...serverlessYml.matchAll(/Type: AWS::Logs::MetricFilter\n\s+DependsOn: (\w+)\n\s+Properties:\n\s+LogGroupName:\n\s+Ref: (\w+)\n/g)];
+  assert.equal(filters.length, (serverlessYml.match(/AWS::Logs::MetricFilter/g) ?? []).length);
+  for (const [, dependsOn, group] of filters) {
+    assert.equal(dependsOn, group);
+    assert.ok(['AppLogGroup', 'WorkerLogGroup'].includes(group));
+  }
+  const alarms = serverlessYml.match(/Type: AWS::CloudWatch::Alarm/g) ?? [];
+  assert.equal((serverlessYml.match(/- \$\{env:PAGES_ALARM_TOPIC_ARN\}/g) ?? []).length, alarms.length);
+});
+
+test('hay alarma para cada evento del contrato, y export_failed no cuenta too_many_rows', () => {
+  assert.match(serverlessYml, /FilterPattern: '\?"request_failed" \?"handler_failed" \?"request_deadline_exceeded"'/);
+  assert.match(serverlessYml, /FilterPattern: '"export_failed" -"too_many_rows"'/);
+  for (const event of ['schema_error', 'link_suspect', 'export_create']) {
+    assert.ok(serverlessYml.includes(`FilterPattern: '"${event}"'`), event);
+  }
+  assert.match(serverlessYml, /MetricName: Errors\n\s+Dimensions:\n\s+- Name: FunctionName\n\s+Value:\n\s+Ref: WorkerLambdaFunction/);
+  assert.match(serverlessYml, /MetricName: Invocations[\s\S]*?Period: 1200\n\s+EvaluationPeriods: 1\n\s+ComparisonOperator: LessThanThreshold\n\s+Threshold: 1\n\s+TreatMissingData: breaching/);
+  assert.match(serverlessYml, /MetricName: ExportCreate[\s\S]*?Period: 3600[\s\S]*?GreaterThanThreshold\n\s+Threshold: 20\n/);
 });

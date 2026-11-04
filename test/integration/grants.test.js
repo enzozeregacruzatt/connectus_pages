@@ -23,8 +23,59 @@ const REQUIRED_VARS = [
   'DB_PASSWORD',
   'DB_SSL_CA_FILE',
   'DB_ADMIN_USER',
+  'WORKER_DB_USER',
+  'WORKER_DB_PASSWORD',
   'LOGIN_DEMO_PASSWORD',
 ];
+
+const SOURCE_TABLES = [
+  'account',
+  'contact_list',
+  'delivery',
+  'short_link',
+  'short_link_delivery',
+  'short_link_sms_outgoings',
+  'sms_incoming',
+  'sms_outgoing',
+];
+
+// Lista cerrada: una vista o columna nueva tiene que pasar por aquí.
+const VIEW_COLUMNS = {
+  account: ['id', 'name'],
+  delivery: ['id', 'id_unique', 'id_account', 'id_product', 'delivery_type', 'name', 'deliver_at', 'created_at'],
+  delivery_datos: [
+    'id', 'id_unique', 'id_account', 'id_product', 'delivery_type', 'name', 'deliver_at', 'created_at', 'status', 'error_status',
+    'has_base', 'contact_list_name', 'number_of_contacts',
+  ],
+  incoming_ids_de_envio: ['id', 'id_delivery'],
+  link_de_envio: ['id_delivery', 'id_account', 'id_unique', 'clicks'],
+  link_de_sms: ['id_delivery', 'id_sms', 'id_short_link', 'clicks'],
+  sms: [
+    'id', 'id_unique', 'id_account', 'id_delivery', 'status', 'src_number', 'dst_number', 'sms_content', 'multiplier', 'created_at',
+    'updated_at', 'dst_provider', 'dst_country',
+  ],
+  sms_de_cuenta: [
+    'id', 'id_unique', 'id_account', 'id_delivery', 'src_number', 'dst_number', 'sms_content', 'status', 'dst_provider', 'created_at',
+  ],
+  sms_de_envio: [
+    'id', 'id_unique', 'id_account', 'id_delivery', 'src_number', 'dst_number', 'sms_content', 'multiplier', 'status', 'dst_provider',
+    'dst_country', 'created_at', 'updated_at',
+  ],
+  sms_de_numero: [
+    'id', 'id_unique', 'id_account', 'id_delivery', 'src_number', 'dst_number', 'sms_content', 'status', 'dst_provider', 'dst_country',
+    'created_at', 'updated_at',
+  ],
+  sms_ids_de_envio: ['id', 'id_delivery'],
+  sms_incoming_de_envio: ['id', 'id_unique', 'id_account', 'id_delivery', 'src_number', 'dst_number', 'sms_content', 'created_at'],
+};
+
+const FORCED_INDEX = {
+  link_de_envio: 'id_delivery__idx',
+  sms_de_cuenta: 'id_account__idx',
+  sms_de_envio: 'id_delivery__idx',
+  sms_de_numero: 'dst_number_idx',
+  sms_incoming_de_envio: 'index_sms_incoming_on_id_delivery',
+};
 
 const ER_ACCESS_DENIED = 1045;
 const ER_DB_ACCESS_DENIED = 1044;
@@ -32,6 +83,9 @@ const ER_TABLE_DENIED = 1142;
 const ER_COLUMN_DENIED = 1143;
 const ER_PROC_DENIED = 1370;
 const ER_BAD_FIELD = 1054;
+const ER_KEY_DOES_NOT_EXITS = 1176;
+const ER_CANT_AGGREGATE_2COLLATIONS = 1267;
+const ER_CANNOT_CONVERT_STRING = 3854;
 const ER_ACCOUNT_LOCKED = 3118;
 
 const RANGE_START = '2026-10-10 00:00:00';
@@ -80,6 +134,10 @@ function connectApp(env) {
   return connect(env, { user: env.DB_USER, password: env.DB_PASSWORD, ssl: tlsOptions(env) });
 }
 
+function connectWorker(env) {
+  return connect(env, { user: env.WORKER_DB_USER, password: env.WORKER_DB_PASSWORD, ssl: tlsOptions(env) });
+}
+
 function connectAdmin(env) {
   return connect(env, { user: env.DB_ADMIN_USER, ssl: tlsOptions(env) });
 }
@@ -91,11 +149,16 @@ async function assertFails(action, errnos) {
   });
 }
 
-// SHOW GRANTS cambia el orden de líneas y columnas, y las comillas, según la versión del servidor.
+// SHOW GRANTS cambia el orden de líneas, privilegios y columnas, y las comillas, según la versión del servidor.
 function normalizeGrants(rows) {
+  const sortColumns = (text) => text.replace(/\(([^)]*)\)/, (_, cols) => `(${cols.split(',').map((c) => c.trim()).sort().join(', ')})`);
   return rows
     .map((row) => Object.values(row)[0].replace(/[`']/g, ''))
-    .map((line) => line.replace(/\(([^)]*)\)/, (_, cols) => `(${cols.split(',').map((c) => c.trim()).sort().join(', ')})`))
+    .map((line) => {
+      const [, privileges, target] = /^GRANT (.*?) ON (.*)$/.exec(line);
+      const sorted = privileges.split(/,\s*(?![^(]*\))/).map(sortColumns).sort().join(', ');
+      return `GRANT ${sorted} ON ${target}`;
+    })
     .sort();
 }
 
@@ -103,23 +166,27 @@ function contractQuery({ dst, cursor, upperBound = true } = {}) {
   let where = `id_account = ? AND id > ?${upperBound ? ' AND id <= ?' : ''} AND created_at BETWEEN ? AND ?`;
   if (dst !== undefined) where += ' AND dst_number = ?';
   if (cursor !== undefined) where += ' AND id < ?';
+  const view = dst === undefined ? 'sms_de_cuenta' : 'sms_de_numero';
   return `SELECT /*+ MAX_EXECUTION_TIME(8000) */ id, id_delivery, dst_number, sms_content, status, created_at
-    FROM connectus_pages.sms WHERE ${where} ORDER BY id DESC LIMIT 51`;
+    FROM connectus_pages.${view} WHERE ${where} ORDER BY id DESC LIMIT 51`;
 }
 
 describe('base de datos', () => {
   let env;
   let app;
+  let worker;
   let admin;
 
   before(async () => {
     env = loadEnv();
     app = await connectApp(env);
+    worker = await connectWorker(env);
     admin = await connectAdmin(env);
   });
 
   after(async () => {
     if (app) await app.end();
+    if (worker) await worker.end();
     if (admin) await admin.end();
   });
 
@@ -132,7 +199,7 @@ describe('base de datos', () => {
   }
 
   describe('pages_app no sale de lo permitido', () => {
-    for (const table of ['sms_outgoing', 'delivery', 'account']) {
+    for (const table of SOURCE_TABLES) {
       it(`no puede leer dbconnectus.${table}`, async () => {
         await assertFails(() => app.query(`SELECT * FROM dbconnectus.${table} LIMIT 1`), [ER_TABLE_DENIED]);
       });
@@ -146,13 +213,13 @@ describe('base de datos', () => {
       assert.deepEqual(visible.sort(), ['connectus_pages', 'information_schema']);
     });
 
-    for (const table of ['allowed_account', 'audit_log']) {
+    for (const table of ['allowed_account', 'audit_log', 'sms_incoming_de_envio']) {
       it(`no puede leer ${table}`, async () => {
         await assertFails(() => app.query(`SELECT * FROM connectus_pages.${table} LIMIT 1`), [ER_TABLE_DENIED]);
       });
     }
 
-    for (const column of ['password_hash', 'active', 'username', 'token_version']) {
+    for (const column of ['password_hash', 'active', 'username', 'token_version', 'link_version']) {
       it(`no puede cambiar login.${column}`, async () => {
         await assertFails(
           () => app.query(`UPDATE connectus_pages.login SET ${column} = ${column} WHERE id = 0`),
@@ -172,6 +239,12 @@ describe('base de datos', () => {
       'CREATE VIEW': 'CREATE VIEW connectus_pages.grants_prueba AS SELECT 1',
       'DROP de una tabla': 'DROP TABLE connectus_pages.login',
       'DROP de una vista': 'DROP VIEW connectus_pages.sms',
+      'DELETE en delivery_stats': 'DELETE FROM connectus_pages.delivery_stats WHERE id_delivery = 0',
+      'UPDATE en export_job': "UPDATE connectus_pages.export_job SET state = 'failed' WHERE id = 0",
+      'DELETE en export_job': 'DELETE FROM connectus_pages.export_job WHERE id = 0',
+      'INSERT en export_job de una columna de estado': `INSERT INTO connectus_pages.export_job
+        (public_id, id_login, id_account, kind, created_at, state)
+        VALUES (REPEAT('0', 32), 1, 101, 'sms_csv', UTC_TIMESTAMP(), 'finished')`,
     };
     for (const [name, sql] of Object.entries(denied)) {
       it(`rechaza ${name}`, async () => {
@@ -183,6 +256,10 @@ describe('base de datos', () => {
       await assertFails(() => app.query('CREATE DATABASE grants_prueba'), [ER_DB_ACCESS_DENIED]);
       await assertFails(() => app.query('DROP DATABASE connectus_pages'), [ER_DB_ACCESS_DENIED]);
       await assertFails(() => app.query('DROP FUNCTION connectus_pages.sms_cutoff_id'), [ER_PROC_DENIED]);
+    });
+
+    it('no puede llamar a purge_audit_log', async () => {
+      await assertFails(() => app.query('CALL connectus_pages.purge_audit_log()'), [ER_PROC_DENIED]);
     });
 
     it('rechaza una conexión sin TLS', async () => {
@@ -198,11 +275,21 @@ describe('base de datos', () => {
         normalizeGrants(rows),
         [
           'GRANT EXECUTE ON FUNCTION connectus_pages.sms_cutoff_id TO pages_app@%',
+          'GRANT INSERT (created_at, delivery_name, dst_number, end_date, id_account, id_delivery, id_login, kind, public_id, start_date), SELECT ON connectus_pages.export_job TO pages_app@%',
           'GRANT INSERT ON connectus_pages.audit_log TO pages_app@%',
+          'GRANT INSERT, SELECT, UPDATE ON connectus_pages.delivery_stats TO pages_app@%',
           'GRANT SELECT ON connectus_pages.account TO pages_app@%',
           'GRANT SELECT ON connectus_pages.delivery TO pages_app@%',
+          'GRANT SELECT ON connectus_pages.delivery_datos TO pages_app@%',
+          'GRANT SELECT ON connectus_pages.incoming_ids_de_envio TO pages_app@%',
+          'GRANT SELECT ON connectus_pages.link_de_envio TO pages_app@%',
+          'GRANT SELECT ON connectus_pages.link_de_sms TO pages_app@%',
           'GRANT SELECT ON connectus_pages.login_account TO pages_app@%',
           'GRANT SELECT ON connectus_pages.sms TO pages_app@%',
+          'GRANT SELECT ON connectus_pages.sms_de_cuenta TO pages_app@%',
+          'GRANT SELECT ON connectus_pages.sms_de_envio TO pages_app@%',
+          'GRANT SELECT ON connectus_pages.sms_de_numero TO pages_app@%',
+          'GRANT SELECT ON connectus_pages.sms_ids_de_envio TO pages_app@%',
           'GRANT SELECT, UPDATE (failed_attempts, last_login_at, locked_until) ON connectus_pages.login TO pages_app@%',
           'GRANT USAGE ON *.* TO pages_app@%',
         ].sort(),
@@ -218,6 +305,183 @@ describe('base de datos', () => {
         { ...row },
         { ssl_type: 'ANY', max_questions: 0, max_connections: 2000, max_user_connections: 8, account_locked: 'N' },
       );
+    });
+  });
+
+  describe('pages_worker no sale de lo permitido', () => {
+    for (const table of SOURCE_TABLES) {
+      it(`no puede leer dbconnectus.${table}`, async () => {
+        await assertFails(() => worker.query(`SELECT * FROM dbconnectus.${table} LIMIT 1`), [ER_TABLE_DENIED]);
+      });
+    }
+
+    for (const table of [
+      'login',
+      'login_account',
+      'allowed_account',
+      'audit_log',
+      'sms_ids_de_envio',
+      'sms',
+      'delivery_datos',
+      'incoming_ids_de_envio',
+      'link_de_envio',
+      'link_de_sms',
+    ]) {
+      it(`no puede leer ${table}`, async () => {
+        await assertFails(() => worker.query(`SELECT * FROM connectus_pages.${table} LIMIT 1`), [ER_TABLE_DENIED]);
+      });
+    }
+
+    it('de delivery_stats solo lee las columnas para borrar', async () => {
+      await worker.query('SELECT id_delivery, updated_at FROM connectus_pages.delivery_stats LIMIT 1');
+      for (const column of ['counts', 'id_account', 'clicks_sum']) {
+        await assertFails(() => worker.query(`SELECT ${column} FROM connectus_pages.delivery_stats LIMIT 1`), [ER_COLUMN_DENIED]);
+      }
+    });
+
+    const denied = {
+      'INSERT en delivery_stats': `INSERT INTO connectus_pages.delivery_stats (id_delivery, id_account, next_step_at, updated_at)
+        VALUES (0, 0, UTC_TIMESTAMP(3), UTC_TIMESTAMP())`,
+      'UPDATE en delivery_stats': 'UPDATE connectus_pages.delivery_stats SET updated_at = UTC_TIMESTAMP() WHERE id_delivery = 0',
+      'INSERT en export_job': `INSERT INTO connectus_pages.export_job (public_id, id_login, id_account, kind, created_at)
+        VALUES (REPEAT('0', 32), 1, 101, 'sms_csv', UTC_TIMESTAMP())`,
+      'DELETE en audit_log': 'DELETE FROM connectus_pages.audit_log WHERE id = 0',
+      'UPDATE en audit_log': "UPDATE connectus_pages.audit_log SET detail = 'x' WHERE id = 0",
+      'UPDATE en login': 'UPDATE connectus_pages.login SET failed_attempts = 0 WHERE id = 0',
+      'CREATE TABLE': 'CREATE TABLE connectus_pages.grants_prueba (id INT)',
+      'DROP de una vista': 'DROP VIEW connectus_pages.sms_de_cuenta',
+    };
+    for (const [name, sql] of Object.entries(denied)) {
+      it(`rechaza ${name}`, async () => {
+        await assertFails(() => worker.query(sql), [ER_TABLE_DENIED, ER_COLUMN_DENIED]);
+      });
+    }
+
+    it('rechaza una conexión sin TLS', async () => {
+      await assertFails(
+        () => connect(env, { user: env.WORKER_DB_USER, password: env.WORKER_DB_PASSWORD, ssl: undefined }),
+        [ER_ACCESS_DENIED],
+      );
+    });
+
+    it('tiene exactamente los permisos del contrato', async () => {
+      const [rows] = await admin.query("SHOW GRANTS FOR 'pages_worker'@'%'");
+      assert.deepEqual(
+        normalizeGrants(rows),
+        [
+          'GRANT DELETE, SELECT (id_delivery, updated_at) ON connectus_pages.delivery_stats TO pages_worker@%',
+          'GRANT DELETE, SELECT, UPDATE ON connectus_pages.export_job TO pages_worker@%',
+          'GRANT EXECUTE ON FUNCTION connectus_pages.sms_cutoff_id TO pages_worker@%',
+          'GRANT EXECUTE ON PROCEDURE connectus_pages.purge_audit_log TO pages_worker@%',
+          'GRANT INSERT ON connectus_pages.audit_log TO pages_worker@%',
+          'GRANT SELECT ON connectus_pages.account TO pages_worker@%',
+          'GRANT SELECT ON connectus_pages.delivery TO pages_worker@%',
+          'GRANT SELECT ON connectus_pages.sms_de_cuenta TO pages_worker@%',
+          'GRANT SELECT ON connectus_pages.sms_de_envio TO pages_worker@%',
+          'GRANT SELECT ON connectus_pages.sms_de_numero TO pages_worker@%',
+          'GRANT SELECT ON connectus_pages.sms_incoming_de_envio TO pages_worker@%',
+          'GRANT USAGE ON *.* TO pages_worker@%',
+        ].sort(),
+      );
+    });
+
+    it('tiene TLS obligatorio y el tope de conexiones del contrato', async () => {
+      const [[row]] = await admin.query(
+        `SELECT ssl_type, max_questions, max_connections, max_user_connections, account_locked
+         FROM mysql.user WHERE user = 'pages_worker' AND host = '%'`,
+      );
+      assert.deepEqual(
+        { ...row },
+        { ssl_type: 'ANY', max_questions: 0, max_connections: 0, max_user_connections: 2, account_locked: 'N' },
+      );
+    });
+  });
+
+  describe('lo que pages_worker sí puede hacer', () => {
+    it('lee las vistas de exportación, y la función de corte', async () => {
+      for (const view of ['account', 'delivery', 'sms_de_cuenta', 'sms_de_numero', 'sms_de_envio', 'sms_incoming_de_envio']) {
+        const [rows] = await worker.query(`SELECT id FROM connectus_pages.${view} LIMIT 1`);
+        assert.equal(rows.length, 1, view);
+      }
+      const [[{ cutoff }]] = await worker.query('SELECT connectus_pages.sms_cutoff_id(?) AS cutoff', [RANGE_START]);
+      assert.match(cutoff, /^[1-9][0-9]*$/);
+    });
+
+    it('lee, cambia y borra un job, y no puede crearlo', async () => {
+      const publicId = crypto.randomBytes(16).toString('hex');
+      await app.query(
+        `INSERT INTO connectus_pages.export_job (public_id, id_login, id_account, kind, created_at)
+         VALUES (?, 1, 101, 'sms_csv', UTC_TIMESTAMP())`,
+        [publicId],
+      );
+      try {
+        const [[job]] = await worker.query('SELECT id, state FROM connectus_pages.export_job WHERE public_id = ?', [publicId]);
+        assert.equal(job.state, 'new');
+        await worker.query("UPDATE connectus_pages.export_job SET state = 'processing', stalls = stalls + 1 WHERE id = ?", [job.id]);
+        const [[updated]] = await worker.query('SELECT state, stalls FROM connectus_pages.export_job WHERE id = ?', [job.id]);
+        assert.deepEqual({ ...updated }, { state: 'processing', stalls: 1 });
+        const [deleted] = await worker.query('DELETE FROM connectus_pages.export_job WHERE id = ?', [job.id]);
+        assert.equal(deleted.affectedRows, 1);
+      } finally {
+        await admin.query('DELETE FROM connectus_pages.export_job WHERE public_id = ?', [publicId]);
+      }
+    });
+
+    it('borra fotos viejas de delivery_stats con solo sus dos columnas', async () => {
+      const id = 900001;
+      await admin.query(
+        `INSERT INTO connectus_pages.delivery_stats (id_delivery, id_account, next_step_at, updated_at)
+         VALUES (?, 101, UTC_TIMESTAMP(3), UTC_TIMESTAMP() - INTERVAL 40 DAY), (?, 101, UTC_TIMESTAMP(3), UTC_TIMESTAMP())`,
+        [id, id + 1],
+      );
+      try {
+        const [deleted] = await worker.query(
+          'DELETE FROM connectus_pages.delivery_stats WHERE id_delivery IN (?) AND updated_at < UTC_TIMESTAMP() - INTERVAL 30 DAY LIMIT 200',
+          [[id, id + 1]],
+        );
+        assert.equal(deleted.affectedRows, 1);
+        const [left] = await admin.query('SELECT id_delivery FROM connectus_pages.delivery_stats WHERE id_delivery IN (?)', [[id, id + 1]]);
+        assert.deepEqual(left.map((row) => row.id_delivery), [id + 1]);
+      } finally {
+        await admin.query('DELETE FROM connectus_pages.delivery_stats WHERE id_delivery IN (?)', [[id, id + 1]]);
+      }
+    });
+
+    it('inserta en audit_log aunque no pueda leerlo', async () => {
+      const [result] = await worker.query("INSERT INTO connectus_pages.audit_log (action, detail) VALUES ('grants_worker', 'sin_numero')");
+      await admin.query('DELETE FROM connectus_pages.audit_log WHERE id = ?', [result.insertId]);
+    });
+
+    it('purge_audit_log borra hasta 1000 filas de más de 1 año, primero las más viejas', async () => {
+      const action = `purga_${crypto.randomBytes(4).toString('hex')}`;
+      const rows = Array.from({ length: 1003 }, (_, index) => [action, String(index)]);
+      await admin.query('INSERT INTO connectus_pages.audit_log (action, detail) VALUES ?', [rows]);
+      await admin.query(
+        'UPDATE connectus_pages.audit_log SET created_at = UTC_TIMESTAMP() - INTERVAL 400 DAY + INTERVAL detail MINUTE WHERE action = ?',
+        [action],
+      );
+      await admin.query(
+        "INSERT INTO connectus_pages.audit_log (action, detail, created_at) VALUES (?, 'reciente', UTC_TIMESTAMP() - INTERVAL 360 DAY)",
+        [action],
+      );
+      try {
+        await worker.query('CALL connectus_pages.purge_audit_log()');
+        const [left] = await admin.query('SELECT detail FROM connectus_pages.audit_log WHERE action = ? ORDER BY created_at', [action]);
+        assert.deepEqual(left.map((row) => row.detail), ['1000', '1001', '1002', 'reciente']);
+        await worker.query('CALL connectus_pages.purge_audit_log()');
+        const [again] = await admin.query('SELECT detail FROM connectus_pages.audit_log WHERE action = ?', [action]);
+        assert.deepEqual(again.map((row) => row.detail), ['reciente'], 'lo que tiene menos de 1 año se queda');
+      } finally {
+        await admin.query('DELETE FROM connectus_pages.audit_log WHERE action = ?', [action]);
+      }
+    });
+
+    it('purge_audit_log es SECURITY DEFINER y de pages_owner', async () => {
+      const [[row]] = await admin.query(
+        `SELECT routine_type AS type, sql_data_access AS access, security_type AS security, definer AS definer
+         FROM information_schema.routines WHERE routine_schema = 'connectus_pages' AND routine_name = 'purge_audit_log'`,
+      );
+      assert.deepEqual({ ...row }, { type: 'PROCEDURE', access: 'MODIFIES SQL DATA', security: 'DEFINER', definer: 'pages_owner@%' });
     });
   });
 
@@ -313,6 +577,8 @@ describe('base de datos', () => {
         assert.equal(await version(), 1, 'sin cambio real de clave no sube');
         await admin.query('UPDATE connectus_pages.login SET token_version = token_version + 1 WHERE id = ?', [id]);
         assert.equal(await version(), 2);
+        const [[{ link_version: linkVersion }]] = await app.query('SELECT link_version FROM connectus_pages.login WHERE id = ?', [id]);
+        assert.equal(linkVersion, 0, 'el trigger no toca la versión del enlace');
       } finally {
         await admin.query('DELETE FROM connectus_pages.login WHERE id = ?', [id]);
       }
@@ -324,6 +590,41 @@ describe('base de datos', () => {
          FROM information_schema.triggers WHERE trigger_schema = 'connectus_pages' AND trigger_name = 'login_password_changed'`,
       );
       assert.deepEqual({ ...row }, { definer: 'pages_owner@%', timing: 'BEFORE', event: 'UPDATE', tbl: 'login' });
+    });
+
+    it('crea y lee un job con las columnas del contrato, que parte en new', async () => {
+      const publicId = crypto.randomBytes(16).toString('hex');
+      await app.query(
+        `INSERT INTO connectus_pages.export_job
+           (public_id, id_login, id_account, kind, id_delivery, delivery_name, start_date, end_date, dst_number, created_at)
+         VALUES (?, 1, 101, 'delivery_xlsx', 1, 'Nombre', '2026-10-01', '2026-10-15', 56900000001, UTC_TIMESTAMP())`,
+        [publicId],
+      );
+      try {
+        const [[job]] = await app.query('SELECT state, last_id, dst_number, next_part FROM connectus_pages.export_job WHERE public_id = ?', [publicId]);
+        assert.deepEqual({ ...job }, { state: 'new', last_id: '0', dst_number: '56900000001', next_part: 1 });
+      } finally {
+        await admin.query('DELETE FROM connectus_pages.export_job WHERE public_id = ?', [publicId]);
+      }
+    });
+
+    it('crea, lee y avanza una foto en delivery_stats', async () => {
+      const id = 900011;
+      await app.query(
+        `INSERT IGNORE INTO connectus_pages.delivery_stats (id_delivery, id_account, next_step_at, updated_at)
+         VALUES (?, 101, UTC_TIMESTAMP(3), UTC_TIMESTAMP())`,
+        [id],
+      );
+      try {
+        await app.query(
+          "UPDATE connectus_pages.delivery_stats SET work_phase = 'counts', work_rows = work_rows + 5, updated_at = UTC_TIMESTAMP() WHERE id_delivery = ?",
+          [id],
+        );
+        const [[row]] = await app.query('SELECT work_phase, work_rows, counts FROM connectus_pages.delivery_stats WHERE id_delivery = ?', [id]);
+        assert.deepEqual({ ...row }, { work_phase: 'counts', work_rows: 5, counts: null });
+      } finally {
+        await admin.query('DELETE FROM connectus_pages.delivery_stats WHERE id_delivery = ?', [id]);
+      }
     });
 
     it('inserta en audit_log aunque no pueda leerlo', async () => {
@@ -341,21 +642,71 @@ describe('base de datos', () => {
 
   describe('vistas', () => {
     // Lista permitida, no de nombres prohibidos: una lista de prohibidos publicaría justo los nombres que quiere evitar.
-    it('el fixture público solo trae las columnas que usa la consulta', async () => {
+    it('el fixture público solo trae las columnas que usan las vistas', async () => {
       const [rows] = await admin.query(
         "SELECT CONCAT(table_name, '.', column_name) AS col FROM information_schema.columns WHERE table_schema = 'dbconnectus'",
       );
-      const filler = 'columna_fuera_del_contrato';
+      const columns = {
+        account: ['id', 'name'],
+        contact_list: ['id', 'id_account', 'name', 'number_of_contacts'],
+        delivery: [
+          'id', 'id_unique', 'id_account', 'delivery_type', 'name', 'deliver_at', 'created_at', 'id_product', 'id_contact_list', 'status',
+          'error_status',
+        ],
+        short_link: ['id', 'id_unique', 'clicks'],
+        short_link_delivery: ['id', 'id_account', 'id_short_link', 'id_delivery'],
+        short_link_sms_outgoings: ['id', 'id_sms_outgoing', 'id_short_link'],
+        sms_incoming: ['id', 'id_unique', 'id_account', 'id_delivery', 'src_number', 'dst_number', 'sms_content', 'created_at'],
+        sms_outgoing: [
+          'id', 'id_unique', 'id_account', 'id_delivery', 'status', 'src_number', 'dst_number', 'sms_content', 'multiplier', 'created_at',
+          'updated_at', 'dst_provider', 'dst_country',
+        ],
+      };
       assert.deepEqual(
         rows.map((row) => row.col).sort(),
-        [
-          ...['id', 'name', filler].map((column) => `account.${column}`),
-          ...['id', 'id_account', 'name', filler].map((column) => `delivery.${column}`),
-          ...['id', 'id_account', 'id_delivery', 'status', 'dst_number', 'sms_content', 'created_at', filler].map(
-            (column) => `sms_outgoing.${column}`,
-          ),
-        ].sort(),
+        Object.entries(columns)
+          .flatMap(([table, names]) => [...names, 'columna_fuera_del_contrato'].map((column) => `${table}.${column}`))
+          .sort(),
       );
+    });
+
+    it('el fixture público solo trae los índices que usan las vistas, más sum_multiplier_idx', async () => {
+      const [rows] = await admin.query(
+        `SELECT table_name AS t, index_name AS i, GROUP_CONCAT(column_name ORDER BY seq_in_index) AS c
+         FROM information_schema.statistics WHERE table_schema = 'dbconnectus' GROUP BY table_name, index_name`,
+      );
+      assert.deepEqual(
+        rows.filter((row) => row.i !== 'PRIMARY').map((row) => `${row.t}.${row.i}(${row.c})`).sort(),
+        [
+          'delivery.delivery_account_created_idx(id_account,created_at)',
+          'delivery.id_account__idx(id_account)',
+          'delivery.id_unique(id_unique)',
+          'short_link_delivery.id_delivery__idx(id_delivery)',
+          'short_link_sms_outgoings.index_short_link_sms_outgoings_on_id_sms_outgoing(id_sms_outgoing)',
+          'sms_incoming.index_sms_incoming_on_id_delivery(id_delivery)',
+          'sms_outgoing.created_at_idx(created_at)',
+          'sms_outgoing.dst_number_idx(dst_number)',
+          'sms_outgoing.id_account__idx(id_account)',
+          'sms_outgoing.id_delivery__idx(id_delivery)',
+          'sms_outgoing.id_unique(id_unique)',
+          'sms_outgoing.sum_multiplier_idx(created_at,multiplier)',
+        ],
+      );
+    });
+
+    it('el esquema solo trae los objetos del contrato', async () => {
+      const [tables] = await admin.query(
+        "SELECT table_name AS name, table_type AS type FROM information_schema.tables WHERE table_schema = 'connectus_pages'",
+      );
+      assert.deepEqual(
+        tables.filter((row) => row.type === 'BASE TABLE').map((row) => row.name).sort(),
+        ['allowed_account', 'audit_log', 'delivery_stats', 'export_job', 'login', 'login_account'],
+      );
+      assert.deepEqual(tables.filter((row) => row.type === 'VIEW').map((row) => row.name).sort(), Object.keys(VIEW_COLUMNS).sort());
+      const [routines] = await admin.query(
+        "SELECT routine_name AS name, routine_type AS type FROM information_schema.routines WHERE routine_schema = 'connectus_pages'",
+      );
+      assert.deepEqual(routines.map((row) => `${row.type} ${row.name}`).sort(), ['FUNCTION sms_cutoff_id', 'PROCEDURE purge_audit_log']);
     });
 
     it('la cuenta 999 existe en el origen', async () => {
@@ -376,11 +727,21 @@ describe('base de datos', () => {
         'SELECT id FROM connectus_pages.delivery WHERE id_account = 999',
         'SELECT id FROM connectus_pages.delivery WHERE id = 6',
         'SELECT id FROM connectus_pages.account WHERE id = 999',
+        'SELECT id FROM connectus_pages.sms_de_cuenta WHERE id_account = 999',
+        'SELECT id FROM connectus_pages.sms_de_numero WHERE dst_number = 56900000999',
+        'SELECT id FROM connectus_pages.sms_de_envio WHERE id_delivery = 6',
+        'SELECT id FROM connectus_pages.sms_ids_de_envio WHERE id_delivery = 6',
+        'SELECT id FROM connectus_pages.delivery_datos WHERE id = 6',
+        'SELECT id FROM connectus_pages.incoming_ids_de_envio WHERE id_delivery = 6',
+        'SELECT clicks FROM connectus_pages.link_de_envio WHERE id_delivery = 6',
+        'SELECT id_sms FROM connectus_pages.link_de_sms WHERE id_delivery = 6',
       ];
       for (const sql of queries) {
         const [rows] = await app.query(sql);
         assert.equal(rows.length, 0, sql);
       }
+      const [incoming] = await worker.query('SELECT id FROM connectus_pages.sms_incoming_de_envio WHERE id_account = 999');
+      assert.equal(incoming.length, 0);
     });
 
     it('sin filtro, solo devuelven las cuentas permitidas', async () => {
@@ -393,42 +754,142 @@ describe('base de datos', () => {
     });
 
     it('no exponen columnas fuera del contrato', async () => {
-      for (const view of ['sms', 'delivery', 'account']) {
+      for (const view of Object.keys(VIEW_COLUMNS)) {
         await assertFails(
-          () => app.query(`SELECT columna_fuera_del_contrato FROM connectus_pages.${view} LIMIT 1`),
+          () => admin.query(`SELECT columna_fuera_del_contrato FROM connectus_pages.${view} LIMIT 1`),
           [ER_BAD_FIELD],
         );
       }
-      const [columns] = await app.query(
+      const [columns] = await admin.query(
         `SELECT table_name AS t, column_name AS c FROM information_schema.columns
-         WHERE table_schema = 'connectus_pages' AND table_name IN ('sms', 'delivery', 'account')
+         WHERE table_schema = 'connectus_pages' AND table_name IN (?)
          ORDER BY table_name, ordinal_position`,
+        [Object.keys(VIEW_COLUMNS)],
       );
       const byTable = {};
       for (const { t, c } of columns) (byTable[t] ||= []).push(c);
-      assert.deepEqual(byTable, {
-        account: ['id', 'name'],
-        delivery: ['id', 'id_account', 'name'],
-        sms: ['id', 'id_account', 'id_delivery', 'dst_number', 'sms_content', 'status', 'created_at'],
-      });
+      assert.deepEqual(byTable, VIEW_COLUMNS);
     });
 
-    for (const view of ['sms', 'delivery', 'account']) {
+    for (const view of Object.keys(VIEW_COLUMNS)) {
       it(`${view} es MERGE, SECURITY DEFINER y de pages_owner`, async () => {
         const [[row]] = await admin.query(`SHOW CREATE VIEW connectus_pages.${view}`);
         const definition = row['Create View'];
         assert.match(definition, /ALGORITHM=MERGE/);
         assert.match(definition, /DEFINER=`pages_owner`@`%`/);
         assert.match(definition, /SQL SECURITY DEFINER/);
+        const forced = FORCED_INDEX[view];
+        const shown = definition.replaceAll('`', '').match(/FORCE INDEX \(([^)]*)\)/)?.[1];
+        assert.equal(shown, forced, 'el índice fijado en la vista');
       });
     }
 
     it('los nombres de envío se traen por cuenta', async () => {
-      const [rows] = await app.query('SELECT id, name FROM connectus_pages.delivery WHERE id IN (?) AND id_account = ?', [
+      const [rows] = await app.query('SELECT id, id_unique, name, id_product FROM connectus_pages.delivery WHERE id IN (?) AND id_account = ?', [
         [1, 7],
         101,
       ]);
       assert.deepEqual(rows.map((row) => row.id), [1]);
+      assert.match(rows[0].id_unique, /^[0-9a-f]{32}$/);
+      assert.strictEqual(rows[0].id_product, 1);
+    });
+
+    it('un carácter de 4 bytes contra una columna utf8mb3 falla con un código que la app clasifica', async () => {
+      await assertFails(
+        () => app.query("SELECT id FROM connectus_pages.delivery WHERE id_account = 101 AND name LIKE ? ESCAPE '!' LIMIT 1", ['%😀%']),
+        [ER_CANT_AGGREGATE_2COLLATIONS, ER_CANNOT_CONVERT_STRING],
+      );
+    });
+
+    it('un índice que ya no existe falla con un código que la app clasifica', async () => {
+      await assertFails(() => admin.query('SELECT id FROM dbconnectus.sms_outgoing FORCE INDEX (no_existe) LIMIT 1'), [ER_KEY_DOES_NOT_EXITS]);
+    });
+
+    // La cuenta sale de la fila donde se devuelven datos, y del envío donde solo se cuenta. Ver sql/01_esquema.sql.
+    describe('una fila con el envío de una cuenta y el id_account de otra', () => {
+      it('no aparece entre los datos del envío con la cuenta del envío', async () => {
+        const [rows] = await app.query('SELECT id FROM connectus_pages.sms_de_envio WHERE id_delivery = 1 AND id_account = 101 AND id IN (9011, 9012)');
+        assert.equal(rows.length, 0);
+      });
+
+      it('nunca se muestra con la cuenta prohibida, y sí con su cuenta si está permitida', async () => {
+        const [rows] = await app.query('SELECT id, id_account FROM connectus_pages.sms_de_envio WHERE id_delivery = 1 AND id IN (9011, 9012)');
+        assert.deepEqual(rows.map((row) => [row.id, row.id_account]), [[9011, 102]]);
+      });
+
+      it('entra en el conteo, que es por envío', async () => {
+        const [rows] = await app.query('SELECT id FROM connectus_pages.sms_ids_de_envio WHERE id_delivery = 1 AND id IN (9011, 9012) ORDER BY id');
+        assert.deepEqual(rows.map((row) => row.id), [9011, 9012]);
+      });
+
+      it('la respuesta de la 999 cuenta para el envío, pero el trabajador no la lee', async () => {
+        const [counted] = await app.query('SELECT id FROM connectus_pages.incoming_ids_de_envio WHERE id_delivery = 1 AND id = 5007');
+        assert.equal(counted.length, 1);
+        const [read] = await worker.query('SELECT id FROM connectus_pages.sms_incoming_de_envio WHERE id_delivery = 1 AND id = 5007');
+        assert.equal(read.length, 0);
+      });
+    });
+
+    describe('delivery_datos', () => {
+      async function datos(id) {
+        const [[row]] = await app.query(
+          'SELECT status, error_status, has_base, contact_list_name, number_of_contacts FROM connectus_pages.delivery_datos WHERE id = ?',
+          [id],
+        );
+        return { ...row, has_base: Number(row.has_base) };
+      }
+
+      it('muestra el motivo de negocio de un fallo y oculta el texto de una excepción', async () => {
+        assert.equal((await datos(10)).error_status, 'No hay saldo suficiente para el envío');
+        const exception = await datos(11);
+        assert.equal(exception.status, 'failed');
+        assert.equal(exception.error_status, null);
+      });
+
+      it('has_base distingue una base sin nombre de un envío sin base, y de una base de otra cuenta', async () => {
+        assert.deepEqual(await datos(9), {
+          status: 'processing',
+          error_status: null,
+          has_base: 1,
+          contact_list_name: 'Base del envío en curso',
+          number_of_contacts: 100,
+        });
+        const withoutName = await datos(18);
+        assert.deepEqual([withoutName.has_base, withoutName.contact_list_name, withoutName.number_of_contacts], [1, null, null]);
+        assert.equal((await datos(17)).has_base, 0);
+        const otherAccount = await datos(19);
+        assert.deepEqual([otherAccount.has_base, otherAccount.contact_list_name], [0, null]);
+      });
+
+      it('tolera nulos y fechas en cero', async () => {
+        const [rows] = await app.query('SELECT id, deliver_at, created_at, status FROM connectus_pages.delivery_datos WHERE id IN (13, 14, 15, 16) ORDER BY id');
+        assert.equal(rows[0].deliver_at, null);
+        assert.equal(rows[1].created_at, null);
+        assert.equal(rows[2].created_at, '0000-00-00 00:00:00');
+        assert.equal(rows[3].status, null);
+      });
+    });
+
+    describe('links', () => {
+      it('link_de_envio devuelve el link del envío', async () => {
+        const [rows] = await app.query('SELECT id_unique, clicks FROM connectus_pages.link_de_envio WHERE id_delivery = 8 AND id_account = 101 LIMIT 1');
+        assert.deepEqual(rows.map((row) => ({ ...row })), [{ id_unique: 'lnkuno1', clicks: 42 }]);
+      });
+
+      it('link_de_sms suma los links de cada SMS del envío, sin las filas ajenas', async () => {
+        const [[row]] = await app.query(
+          'SELECT COUNT(DISTINCT id_short_link) AS links, COALESCE(SUM(clicks), 0) AS clics FROM connectus_pages.link_de_sms WHERE id_delivery = 3',
+        );
+        const [[expected]] = await admin.query(
+          'SELECT COUNT(*) AS links, SUM(id % 5) AS clics FROM dbconnectus.sms_outgoing WHERE id_delivery = 3',
+        );
+        assert.deepEqual({ ...row }, { ...expected });
+      });
+
+      it('un envío de link único no tiene links por SMS', async () => {
+        const [rows] = await app.query('SELECT id_sms FROM connectus_pages.link_de_sms WHERE id_delivery = 8');
+        assert.equal(rows.length, 0);
+      });
     });
   });
 
@@ -497,43 +958,6 @@ describe('base de datos', () => {
       const [rows] = await app.query(contractQuery(), [999, lo, hi, RANGE_START, RANGE_END]);
       assert.equal(rows.length, 0);
     });
-
-    // EXPLAIN sobre una vista exige SHOW VIEW, que pages_app no tiene ni debe tener: se mira el plan como admin.
-    async function explain(options, params) {
-      const { lo, hi } = await cutoffs();
-      const [rows] = await admin.query(`EXPLAIN ${contractQuery(options)}`, [101, lo, hi, RANGE_START, RANGE_END, ...params]);
-      return rows;
-    }
-
-    function assertMergedWithIndex(plan) {
-      assert.ok(plan.every((row) => row.select_type === 'SIMPLE'), 'la vista no se fusionó');
-      assert.ok(!plan.some((row) => String(row.table).startsWith('<derived')), 'la vista se materializó');
-      const sms = plan.find((row) => row.table === 's');
-      assert.ok(sms, 'falta sms_outgoing en el plan');
-      assert.notEqual(sms.key, null);
-      assert.notEqual(sms.type, 'ALL');
-      const allowed = plan.find((row) => row.table === 'a');
-      assert.ok(allowed, 'falta allowed_account en el plan');
-      assert.equal(allowed.key, 'PRIMARY');
-    }
-
-    it('usa índice sin número, en la vista fusionada', async () => {
-      assertMergedWithIndex(await explain({}, []));
-    });
-
-    it('usa índice con número, en la vista fusionada', async () => {
-      assertMergedWithIndex(await explain({ dst: '56900000777' }, ['56900000777']));
-    });
-
-    it('usa índice con cursor, en la vista fusionada', async () => {
-      assertMergedWithIndex(await explain({ cursor: '12000' }, ['12000']));
-    });
-
-    it('sin cota superior, para los rangos que llegan hasta hoy, también usa índice en la vista fusionada', async () => {
-      const { lo } = await cutoffs();
-      const [plan] = await admin.query(`EXPLAIN ${contractQuery({ upperBound: false })}`, [101, lo, RANGE_START, RANGE_END]);
-      assertMergedWithIndex(plan);
-    });
   });
 
   describe('pages_owner', () => {
@@ -543,9 +967,14 @@ describe('base de datos', () => {
         normalizeGrants(rows),
         [
           'GRANT ALL PRIVILEGES ON connectus_pages.* TO pages_owner@% WITH GRANT OPTION',
+          'GRANT SELECT (clicks, id, id_unique) ON dbconnectus.short_link TO pages_owner@%',
+          'GRANT SELECT (created_at, deliver_at, delivery_type, error_status, id, id_account, id_contact_list, id_product, id_unique, name, status) ON dbconnectus.delivery TO pages_owner@%',
+          'GRANT SELECT (created_at, dst_country, dst_number, dst_provider, id, id_account, id_delivery, id_unique, multiplier, sms_content, src_number, status, updated_at) ON dbconnectus.sms_outgoing TO pages_owner@%',
+          'GRANT SELECT (created_at, dst_number, id, id_account, id_delivery, id_unique, sms_content, src_number) ON dbconnectus.sms_incoming TO pages_owner@%',
+          'GRANT SELECT (id, id_account, name, number_of_contacts) ON dbconnectus.contact_list TO pages_owner@%',
           'GRANT SELECT (id, name) ON dbconnectus.account TO pages_owner@%',
-          'GRANT SELECT (id, id_account, name) ON dbconnectus.delivery TO pages_owner@%',
-          'GRANT SELECT (created_at, dst_number, id, id_account, id_delivery, sms_content, status) ON dbconnectus.sms_outgoing TO pages_owner@%',
+          'GRANT SELECT (id_account, id_delivery, id_short_link) ON dbconnectus.short_link_delivery TO pages_owner@%',
+          'GRANT SELECT (id_short_link, id_sms_outgoing) ON dbconnectus.short_link_sms_outgoings TO pages_owner@%',
           'GRANT USAGE ON *.* TO pages_owner@%',
         ].sort(),
       );
@@ -570,6 +999,8 @@ describe('base de datos', () => {
 
       const [sms] = await app.query('SELECT id FROM connectus_pages.sms WHERE id_account = 101 LIMIT 1');
       assert.equal(sms.length, 1);
+      const [byAccount] = await app.query('SELECT id FROM connectus_pages.sms_de_cuenta WHERE id_account = 101 LIMIT 1');
+      assert.equal(byAccount.length, 1);
       const [delivery] = await app.query('SELECT id FROM connectus_pages.delivery WHERE id_account = 101 LIMIT 1');
       assert.equal(delivery.length, 1);
       const [account] = await app.query('SELECT id FROM connectus_pages.account WHERE id = 101');
@@ -726,6 +1157,49 @@ describe('base de datos', () => {
       });
     }
 
+    it('corre cada archivo con su cuenta y en orden, y deja las claves solo en OUT_ENV', () => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'connectus-pages-pasos-'));
+      const client = path.join(directory, 'mysql');
+      const steps = path.join(directory, 'pasos');
+      const outEnv = path.join(directory, 'cuentas.env');
+      const separator = '--paso--';
+      fs.writeFileSync(
+        client,
+        `#!/bin/sh\ncase "$1" in\n  --defaults-file=*) who=owner ;;\n  *) who=master ;;\nesac\n`
+          + `{ echo "${separator} $who"; cat; } >> '${steps}'\n`,
+        { mode: 0o755 },
+      );
+      try {
+        const result = run({ MYSQL: client, MYSQL_ADMIN_ARGS: '-u master', MYSQL_HOST_ARGS: SECURE_HOST, OUT_ENV: outEnv });
+        assert.equal(result.status, 0, result.stderr);
+
+        const executed = fs.readFileSync(steps, 'utf8').split(`${separator} `).slice(1);
+        assert.deepEqual(executed.map((step) => step.split('\n', 1)[0]), ['master', 'owner', 'owner', 'owner', 'master']);
+        const sqlFile = (name) => fs.readFileSync(path.join(ROOT, 'sql', name), 'utf8');
+        const body = (step) => step.slice(step.indexOf('\n') + 1);
+        assert.equal(body(executed[1]), sqlFile('01_esquema.sql'));
+        assert.equal(body(executed[2]), sqlFile('02_permisos_app.sql'));
+        assert.equal(body(executed[3]), sqlFile('02_permisos_worker.sql'));
+        assert.equal(body(executed[4]), sqlFile('03_bloquear_owner.sql'));
+
+        assert.equal(fs.statSync(outEnv).mode & 0o777, 0o600);
+        const saved = /^DB_USER=pages_app\nDB_PASSWORD=([0-9a-f]{48})\nWORKER_DB_USER=pages_worker\nWORKER_DB_PASSWORD=([0-9a-f]{48})\n$/
+          .exec(fs.readFileSync(outEnv, 'utf8'));
+        assert.ok(saved, 'OUT_ENV no tiene la forma esperada');
+        const [, appPassword, workerPassword] = saved;
+        assert.notEqual(appPassword, workerPassword);
+
+        const accounts = body(executed[0]);
+        assert.ok(accounts.includes(`'pages_app'@'%' IDENTIFIED BY '${appPassword}'`));
+        assert.ok(accounts.includes(`'pages_worker'@'%' IDENTIFIED BY '${workerPassword}'`));
+        assert.doesNotMatch(accounts, /__PW_/);
+        assert.equal(result.stderr.includes(appPassword) || result.stderr.includes(workerPassword), false);
+        assert.equal(result.stdout.includes(appPassword) || result.stdout.includes(workerPassword), false);
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    });
+
     // Lo que deja mysql_config_editor: 4 bytes en cero, 20 de clave y una línea cifrada por registro, con su largo adelante.
     function writeLoginFile(file, lines) {
       const obfuscation = crypto.randomBytes(20);
@@ -794,20 +1268,23 @@ describe('base de datos', () => {
       }
     });
 
-    it('el comando documentado para subir la clave deja el archivo sin permisos para otros, con cualquier umask', () => {
+    it('los comandos documentados para subir las claves dejan el archivo sin permisos para otros, con cualquier umask', () => {
       const header = fs.readFileSync(APROVISIONAR, 'utf8');
-      const documented = /^# +(\(umask 077; sed .*)$/m.exec(header)?.[1];
-      assert.ok(documented, 'falta el comando en la cabecera');
+      const documented = [...header.matchAll(/^# +(\(umask 077; sed .*)$/gm)].map((match) => match[1]);
+      assert.equal(documented.length, 2, 'falta un comando en la cabecera');
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'connectus-pages-umask-'));
       try {
         const outEnv = path.join(directory, 'out.env');
         const target = path.join(directory, 'clave');
-        fs.writeFileSync(outEnv, 'DB_USER=pages_app\nDB_PASSWORD=clave-de-prueba\n');
-        const command = documented.replaceAll('<OUT_ENV>', `'${outEnv}'`).replaceAll('<archivo>', `'${target}'`);
-        const result = spawnSync('bash', ['-c', `umask 022; ${command}`], { encoding: 'utf8' });
-        assert.equal(result.status, 0, result.stderr);
-        assert.equal(fs.readFileSync(target, 'utf8'), 'clave-de-prueba');
-        assert.equal(fs.statSync(target).mode & 0o777, 0o600);
+        fs.writeFileSync(outEnv, 'DB_USER=pages_app\nDB_PASSWORD=clave-app\nWORKER_DB_USER=pages_worker\nWORKER_DB_PASSWORD=clave-worker\n');
+        for (const [index, expected] of ['clave-app', 'clave-worker'].entries()) {
+          const command = documented[index].replaceAll('<OUT_ENV>', `'${outEnv}'`).replaceAll('<archivo>', `'${target}'`);
+          const result = spawnSync('bash', ['-c', `umask 022; ${command}`], { encoding: 'utf8' });
+          assert.equal(result.status, 0, result.stderr);
+          assert.equal(fs.readFileSync(target, 'utf8'), expected);
+          assert.equal(fs.statSync(target).mode & 0o777, 0o600);
+          fs.rmSync(target);
+        }
       } finally {
         fs.rmSync(directory, { recursive: true, force: true });
       }
@@ -816,7 +1293,7 @@ describe('base de datos', () => {
     it('si las cuentas ya existen, falla con un mensaje claro y no cambia nada', async () => {
       const result = run({ MYSQL_ADMIN_ARGS: `-u ${env.DB_ADMIN_USER}`, MYSQL_HOST_ARGS: hostArgs() });
       assert.notEqual(result.status, 0);
-      assert.match(result.stderr, /pages_owner o pages_app ya existen/);
+      assert.match(result.stderr, /pages_owner, pages_app o pages_worker ya existen/);
       const again = await connectApp(env);
       await again.end();
     });

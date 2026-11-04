@@ -4,6 +4,7 @@ const { BUSY_MESSAGE, createApp } = require('./app');
 const { loadConfig } = require('./config');
 const { createDb, errorCode } = require('./db');
 const { buildSecurityHeaders } = require('./headers');
+const { createStorage } = require('./storage');
 
 const DEADLINE_MARGIN_MS = 2000;
 // El timeout de serverless.yml menos el margen, para cuando no hay context.
@@ -74,13 +75,14 @@ function deadlineMs(context) {
 // cabeceras de seguridad. Cubre también cargar la configuración y conectar.
 function createHandler(getApp, discardApp = () => {}) {
   return async (event, context) => {
+    const startedAtMs = performance.now();
     let timer;
     const expired = new Promise((resolve) => {
       timer = setTimeout(resolve, deadlineMs(context), DEADLINE_EXPIRED);
     });
     const work = (async () => {
       const app = await getApp();
-      return app.handle(toRequest(event));
+      return app.handle({ ...toRequest(event), startedAtMs });
     })();
     try {
       const response = await Promise.race([work, expired]);
@@ -128,7 +130,7 @@ function createAppHolder(build) {
 const holder = createAppHolder(async () => {
   const config = await loadConfig();
   const db = createDb(config);
-  return { ...createApp({ db, config }), close: () => db.end() };
+  return { ...createApp({ db, config, storage: createStorage() }), close: () => db.end() };
 });
 
 exports.app = createHandler(holder.get, holder.discard);

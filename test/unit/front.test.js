@@ -82,7 +82,10 @@ test('index.html solo carga los recursos propios', () => {
 });
 
 test('no hay URLs externas en ningún archivo', () => {
-  for (const [name, source] of [['index.html', html], ['app.js', js], ['app.css', css]]) {
+  // El espacio de nombres de SVG es un identificador, no algo que se pida: createElementNS no sale a la red.
+  assert.equal(js.split("'http://www.w3.org/2000/svg'").length, 2);
+  const jsWithoutNamespace = js.replace("'http://www.w3.org/2000/svg'", '');
+  for (const [name, source] of [['index.html', html], ['app.js', jsWithoutNamespace], ['app.css', css]]) {
     assert.equal(EXTERNAL_URL.test(source), false, `${name} contiene una URL externa`);
   }
   assert.equal(/@import\b/i.test(css), false);
@@ -100,14 +103,14 @@ test('app.js solo usa self y top para saber si está embebida', () => {
 });
 
 test('si app.js no carga o tarda, queda un aviso estático y neutro, con el login oculto, y el <noscript> sigue', () => {
-  assert.match(html, /<p class="notice" id="load-notice" role="status">La consulta está tardando en cargar\. Si no aparece, recarga la página\.<\/p>/);
+  assert.match(html, /<p class="notice" id="load-notice" role="status">La consulta está tardando en cargar\. Si no aparece, recarga la página o ábrela en el navegador\.<\/p>/);
   assert.match(css, /#load-notice,\s*#login-status:not\(:empty\),\s*#search-status:not\(:empty\)\s*\{\s*background: var\(--status-bg\);/);
   assert.match(html, /<section\b[^>]*\bid="login-view"[^>]*\shidden>/);
   assert.match(html, /<noscript>\s*<p class="notice notice--error">Esta consulta necesita JavaScript para funcionar\.<\/p>\s*<\/noscript>/);
 });
 
 test('app.js cambia el aviso por el login solo al final, con todo ya conectado', () => {
-  const swap = js.search(/els\.loadNotice\.hidden = true;\n\s+els\.loginView\.hidden = false;/);
+  const swap = js.search(/els\.loadNotice\.hidden = true;\n\s+showLoginIfUsable\(\);/);
   assert.ok(swap > 0, 'app.js debe ocultar el aviso y mostrar el login');
   assert.ok(swap > js.lastIndexOf('addEventListener('));
   assert.ok(swap < js.indexOf('if (self === top) els.username.focus();'), 'un elemento oculto no puede recibir el foco');
@@ -159,9 +162,15 @@ test('cada label apunta a un control existente y cada control tiene label', () =
   }
 });
 
-test('la tabla tiene las columnas del contrato con scope', () => {
-  const headers = [...html.matchAll(/<th scope="col">([^<]+)<\/th>/g)].map((match) => match[1]);
-  assert.deepEqual(headers, ['Fecha', 'Número destino', 'Mensaje', 'Estado', 'Envío']);
+test('cada tabla tiene las columnas del contrato con scope', () => {
+  const columnsOf = (bodyId) => {
+    const table = new RegExp(`<table\\b(?:(?!</table>)[\\s\\S])*id="${bodyId}"`).exec(html)[0];
+    return [...table.matchAll(/<th scope="col">(.*?)<\/th>/g)].map((match) => match[1].replace(/<[^>]+>/g, ''));
+  };
+  assert.deepEqual(columnsOf('results-body'), ['Fecha', 'Número destino', 'Mensaje', 'Estado', 'Envío']);
+  assert.deepEqual(columnsOf('exports-body'), ['Cuenta', 'Filtro', 'Período', 'Estado', 'Archivo']);
+  assert.deepEqual(columnsOf('deliveries-body'), ['Nombre', 'Tipo', 'Creado', 'Envío', 'Ver detalle']);
+  assert.deepEqual(columnsOf('messages-body'), ['Estado', 'Identificador', 'Destino', 'Proveedor', 'País', 'Actualizado']);
   assert.equal(/<th(?=[\s>])(?![^>]*\sscope=)/.test(html), false);
 });
 
@@ -183,4 +192,75 @@ test('index.html y app.css llevan los textos y el aspecto del contrato', () => {
   for (const color of ['#344767', '#67748e', '#dce4ec', '#5db7e5']) {
     assert.ok(css.includes(color), `falta el color: ${color}`);
   }
+});
+
+test('ningún botón es de tipo submit: nada depende de que el formulario se envíe', () => {
+  const buttons = openingTags(html).filter((tag) => /^<button\b/i.test(tag));
+  assert.ok(buttons.length > 0);
+  for (const tag of buttons) assert.match(tag, /\stype="button"/, tag);
+  assert.equal(openingTags(html).some((tag) => /\stype="submit"/i.test(tag)), false);
+});
+
+test('se conservan los <form> para el relleno automático, y su submit solo hace preventDefault', () => {
+  const forms = [...html.matchAll(/<form\b[^>]*\sid="([^"]+)"/g)].map((match) => match[1]).sort();
+  assert.deepEqual(forms, ['deliveries-form', 'full-report-form', 'login-form', 'messages-form', 'search-form']);
+  assert.match(js, /for \(const form of \[els\.loginForm, els\.searchForm, els\.fullReportForm, els\.deliveriesForm, els\.messagesForm\]\) \{\n\s+form\.addEventListener\('submit', \(event\) => event\.preventDefault\(\)\);/);
+  assert.equal(js.match(/addEventListener\('submit'/g).length, 1);
+  assert.doesNotMatch(js, /requestSubmit|\.submit\(/);
+});
+
+test('la dona se dibuja con createElementNS, y sus colores van en atributos o clases', () => {
+  assert.match(js, /document\.createElementNS\(SVG_NAMESPACE, name\)/);
+  assert.doesNotMatch(js, /setAttribute\('style'/);
+  assert.match(css, /\.donut__slice\s*\{/);
+});
+
+test('la descarga va por un <a>, sin iframe oculto ni ventana nueva', () => {
+  assert.match(js, /document\.createElement\('a'\)/);
+  assert.doesNotMatch(js, /createElement\('iframe'\)|\bopen\(/);
+  assert.match(html, /¿No se descargó\? Abre esta consulta en tu navegador\./);
+  assert.match(html, /id="download-help-link"[^>]*readonly/);
+});
+
+test('la advertencia de descarga fallida está igual donde hay un archivo listo', () => {
+  for (const id of ['exports-note', 'report-note', 'responses-note']) {
+    assert.match(html, new RegExp(`id="${id}" hidden>Si la descarga falla, esta página puede cerrarse y tendrás que volver a ingresar tu clave\\.</p>`));
+  }
+});
+
+test('ningún texto de pantalla promete la URL del archivo: el campo solo recibe la de la app', () => {
+  assert.equal(js.match(/els\.downloadHelpLink\.value = /g).length, 2);
+  assert.match(js, /els\.downloadHelpLink\.value = location\.href;/);
+  assert.match(js, /els\.downloadHelpLink\.value = '';/);
+});
+
+test('la navegación queda en memoria: nada toca la URL', () => {
+  assert.doesNotMatch(js, /\bhistory\b|location\.(?:hash|search|href)\s*=[^=]|location\.assign|location\.replace/);
+});
+
+test('el enlace no se borra de la URL, no se guarda y nada toma el foco por autofocus', () => {
+  assert.doesNotMatch(js, /\bhistory\b|replaceState|pushState/);
+  assert.doesNotMatch(html, /\bautofocus\b/i);
+  assert.doesNotMatch(js, /\bautofocus\b/);
+});
+
+test('app.js lee el enlace primero del fragmento, con la misma forma que el servidor', () => {
+  const { signLink } = require('../../src/link');
+  const pattern = /const LINK_PATTERN = (\/.*\/);/.exec(js)?.[1];
+  assert.ok(pattern, 'app.js debe tener su expresión regular');
+  const front = new RegExp(pattern.slice(1, -1));
+  const link = signLink({ slot: 'a', loginId: 123, linkVersion: 0, exp: 1800000000 }, 'x'.repeat(32));
+  assert.equal(front.test(link), true);
+  for (const bad of [`${link}\n`, ` ${link}`, link.replace('l1', 'l2'), link.replace('.a.', '.c.'), link.slice(0, -1), `${link}=`]) {
+    assert.equal(front.test(bad), false, JSON.stringify(bad));
+  }
+  assert.ok(js.indexOf('location.hash') < js.indexOf('location.search'));
+});
+
+test('el aviso del enlace es una región oculta al partir, con los textos del contrato', () => {
+  assert.match(html, /<p class="notice" id="link-notice" role="alert" hidden><\/p>/);
+  assert.match(css, /#link-notice,\s*#load-notice,/);
+  assert.ok(js.includes('Esta consulta se abre desde el enlace que te entregó Connectus.'));
+  assert.ok(js.includes('El enlace venció el '));
+  assert.ok(js.includes('Pide uno nuevo a tu contacto de Connectus.'));
 });

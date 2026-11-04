@@ -8,6 +8,7 @@ const { decodeCursor } = require('../../src/cursor');
 const {
   buildApp,
   getSms,
+  linkFor,
   loginRow,
   postLogin,
   signIn,
@@ -118,6 +119,34 @@ test('subir token_version invalida el token ya emitido, y el nuevo login recibe 
   assert.equal((await getSms(app, newToken, VALID_SEARCH)).statusCode, 200);
 });
 
+test('un token sigue valiendo tras revocar el enlace, hasta su propio vencimiento', async () => {
+  const { app, db } = buildApp();
+  const token = await signIn(app);
+  db.state.logins[0].linkVersion += 1;
+  assert.equal((await getSms(app, token, VALID_SEARCH)).statusCode, 200);
+});
+
+test('un token sigue valiendo si el enlace vence después de entrar', async () => {
+  const { app, clockState } = buildApp();
+  const { token } = JSON.parse((await postLogin(app, {
+    link: linkFor({ exp: NOW_SECONDS + 60 }),
+    username: 'demo',
+    password: PASSWORD,
+  })).body);
+  clockState.now = NOW_MS + 61 * 1000;
+  assert.equal((await getSms(app, token, VALID_SEARCH)).statusCode, 200);
+  clockState.now = NOW_MS + 3600 * 1000;
+  assertUnauthorized(await getSms(app, token, VALID_SEARCH));
+});
+
+test('GET /api/* no acepta el enlace por query: sin Bearer sigue en 401, y el login no se abre por GET', async () => {
+  const { app, db } = buildApp();
+  assertUnauthorized(await getSms(app, null, { ...VALID_SEARCH, e: linkFor(), link: linkFor() }));
+  const login = await app.handle({ method: 'GET', path: '/api/login', headers: {}, query: { e: [linkFor()] } });
+  assert.equal(login.statusCode, 405);
+  assert.deepEqual(db.calls, []);
+});
+
 test('quitar una cuenta del login surte efecto en la petición siguiente', async () => {
   const { app, db } = buildApp();
   const token = await signIn(app);
@@ -135,7 +164,7 @@ test('una cuenta ajena responde 403 y no llega a consultar SMS', async () => {
   const response = await getSms(app, token, { ...VALID_SEARCH, account: '999' });
   assert.equal(response.statusCode, 403);
   assert.equal(errorOf(response), 'forbidden');
-  assert.equal(db.calls.some(({ sql }) => /connectus_pages\.sms\b|sms_cutoff_id/.test(sql)), false);
+  assert.equal(db.calls.some(({ sql }) => /connectus_pages\.sms_de_|sms_cutoff_id/.test(sql)), false);
   assert.doesNotMatch(response.body, /Mensaje/);
 });
 
@@ -176,10 +205,10 @@ test('los items no llevan el id de la tabla y el cursor no lo deja ver', async (
   const { app } = buildApp({ seed: { sms } });
   const token = await signIn(app);
   const { items, nextCursor } = JSON.parse((await getSms(app, token, VALID_SEARCH)).body);
-  assert.deepEqual(Object.keys(items[0]).sort(), ['content', 'createdAt', 'delivery', 'dst', 'status']);
+  assert.deepEqual(Object.keys(items[0]).sort(), ['content', 'createdAt', 'delivery', 'deliveryId', 'dst', 'status']);
   assert.match(nextCursor, /^[A-Za-z0-9_-]{48}$/);
   assert.doesNotMatch(nextCursor, /1001/);
-  assert.equal(decodeCursor(nextCursor, 101, TOKEN_SECRET), 1001);
+  assert.equal(decodeCursor(nextCursor, 'sms:101', TOKEN_SECRET), 1001);
 });
 
 test('el cursor pagina hasta el final sin repetir filas', async () => {
@@ -208,7 +237,7 @@ test('un cursor de otra cuenta, alterado o numérico responde 400 sin consultar 
     const response = await getSms(app, token, { ...VALID_SEARCH, account, cursor });
     assert.equal(response.statusCode, 400, `cursor ${cursor} en ${account}`);
     assert.equal(errorOf(response), 'invalid_request');
-    assert.equal(db.calls.some(({ sql }) => /connectus_pages\.sms\b/.test(sql)), false);
+    assert.equal(db.calls.some(({ sql }) => /connectus_pages\.sms_de_/.test(sql)), false);
   }
 });
 
@@ -254,7 +283,7 @@ test('dst con inyección llega a la consulta como número y no toca el SQL', asy
   const token = await signIn(app);
   db.calls.length = 0;
   await getSms(app, token, { ...VALID_SEARCH, dst: "56900000001' OR 1=1 -- " });
-  const call = db.calls.find(({ sql }) => /connectus_pages\.sms\b/.test(sql));
+  const call = db.calls.find(({ sql }) => /connectus_pages\.sms_de_/.test(sql));
   assert.doesNotMatch(call.sql, /OR 1=1|56900000001/);
   assert.equal(call.params.at(-1), 5690000000111);
   assert.equal(typeof call.params.at(-1), 'number');
@@ -319,7 +348,7 @@ for (const [label, error, statusCode, code, message] of [
   test(`un error ${label} responde ${statusCode} ${code}`, async () => {
     const { app, db } = buildApp();
     const token = await signIn(app);
-    db.failOn(/FROM connectus_pages\.sms WHERE/, error);
+    db.failOn(/FROM connectus_pages\.sms_de_(?:cuenta|numero) WHERE/, error);
     const spy = mock.method(console, 'error', () => {});
     const response = await getSms(app, token, VALID_SEARCH);
     spy.mock.restore();
@@ -331,10 +360,82 @@ for (const [label, error, statusCode, code, message] of [
   });
 }
 
+for (const [errno, code] of [
+  [1267, 'ER_CANT_AGGREGATE_2COLLATIONS'],
+  [3854, 'ER_CANNOT_CONVERT_STRING'],
+]) {
+  test(`un error ${errno}, de un carácter que la columna no admite, responde 400 genérico`, async () => {
+    const { app, db } = buildApp();
+    const token = await signIn(app);
+    db.failOn(/FROM connectus_pages\.sms_de_(?:cuenta|numero) WHERE/, mysqlError(errno, code));
+    const spy = mock.method(console, 'error', () => {});
+    const response = await getSms(app, token, VALID_SEARCH);
+    spy.mock.restore();
+    assert.equal(response.statusCode, 400);
+    assert.deepEqual(JSON.parse(response.body), { error: 'invalid_request', message: 'La solicitud no es válida.' });
+  });
+}
+
+for (const [errno, code] of [
+  [1054, 'ER_BAD_FIELD_ERROR'],
+  [1142, 'ER_TABLEACCESS_DENIED_ERROR'],
+  [1143, 'ER_COLUMNACCESS_DENIED_ERROR'],
+  [1146, 'ER_NO_SUCH_TABLE'],
+  [1176, 'ER_KEY_DOES_NOT_EXITS'],
+  [1305, 'ER_SP_DOES_NOT_EXIST'],
+  [1356, 'ER_VIEW_INVALID'],
+  [1370, 'ER_PROCACCESS_DENIED_ERROR'],
+]) {
+  test(`un error ${errno} responde 500 sin detalle, y la consola lo registra como schema_error`, async () => {
+    const { app, db } = buildApp();
+    const token = await signIn(app);
+    db.failOn(/FROM connectus_pages\.sms_de_(?:cuenta|numero) WHERE/, mysqlError(errno, code));
+    const spy = mock.method(console, 'error', () => {});
+    const response = await getSms(app, token, VALID_SEARCH);
+    const logged = spy.mock.calls.map((call) => call.arguments.join(' ')).join('\n');
+    spy.mock.restore();
+    assert.equal(response.statusCode, 500);
+    assert.equal(JSON.parse(response.body).error, 'internal');
+    assert.doesNotMatch(response.body, /schema_error|ER_/);
+    assert.equal(logged, JSON.stringify({ event: 'schema_error', code }));
+  });
+}
+
+test('un error de SQL que no es de esquema sigue como request_failed', async () => {
+  const { app, db } = buildApp();
+  const token = await signIn(app);
+  db.failOn(/FROM connectus_pages\.sms_de_(?:cuenta|numero) WHERE/, mysqlError(1064, 'ER_PARSE_ERROR'));
+  const spy = mock.method(console, 'error', () => {});
+  await getSms(app, token, VALID_SEARCH);
+  const logged = spy.mock.calls.map((call) => call.arguments.join(' ')).join('\n');
+  spy.mock.restore();
+  assert.equal(logged, JSON.stringify({ event: 'request_failed', code: 'ER_PARSE_ERROR' }));
+});
+
+for (const [errno, code, statusCode, event] of [
+  [3024, 'ER_QUERY_TIMEOUT', 504, 'request_cut'],
+  [1317, 'ER_QUERY_INTERRUPTED', 504, 'request_cut'],
+  [3854, 'ER_CANNOT_CONVERT_STRING', 400, 'bad_text'],
+  [1205, 'ER_LOCK_WAIT_TIMEOUT', 503, 'request_failed'],
+  [1064, 'ER_PARSE_ERROR', 500, 'request_failed'],
+]) {
+  test(`un error ${errno} responde ${statusCode} y registra ${event}, porque solo lo que no es previsto llega a la alarma`, async () => {
+    const { app, db } = buildApp();
+    const token = await signIn(app);
+    db.failOn(/FROM connectus_pages\.sms_de_(?:cuenta|numero) WHERE/, mysqlError(errno, code));
+    const spy = mock.method(console, 'error', () => {});
+    const response = await getSms(app, token, VALID_SEARCH);
+    const logged = spy.mock.calls.map((call) => call.arguments.join(' ')).join('\n');
+    spy.mock.restore();
+    assert.equal(response.statusCode, statusCode);
+    assert.equal(logged, JSON.stringify({ event, code }));
+  });
+}
+
 test('un corte en el saludo TLS responde 503, y el registro conserva el código', async () => {
   const { app, db } = buildApp();
   const token = await signIn(app);
-  db.failOn(/FROM connectus_pages\.sms WHERE/, mysqlError(undefined, 'HANDSHAKE_SSL_ERROR', { fatal: true }));
+  db.failOn(/FROM connectus_pages\.sms_de_(?:cuenta|numero) WHERE/, mysqlError(undefined, 'HANDSHAKE_SSL_ERROR', { fatal: true }));
   const spy = mock.method(console, 'error', () => {});
   const response = await getSms(app, token, VALID_SEARCH);
   const logged = spy.mock.calls.map((call) => call.arguments.join(' ')).join('\n');
@@ -352,9 +453,11 @@ test('la consola nunca recibe clave, token, número, contenido ni parámetros de
   const { app, db } = buildApp({
     seed: { sms: [smsRow(1, { dst_number: PRIVATE_NUMBER, sms_content: PRIVATE_CONTENT })] },
   });
-  await postLogin(app, { username: 'demo', password: WRONG_PASSWORD });
-  await postLogin(app, { username: 'no-existe', password: WRONG_PASSWORD });
-  const { token } = JSON.parse((await postLogin(app, { username: 'demo', password: PASSWORD })).body);
+  const LINK = linkFor();
+  await postLogin(app, { link: LINK, username: 'demo', password: WRONG_PASSWORD });
+  await postLogin(app, { link: LINK, username: 'no-existe', password: WRONG_PASSWORD });
+  await postLogin(app, { link: `${LINK}x`, username: 'demo', password: WRONG_PASSWORD });
+  const { token } = JSON.parse((await postLogin(app, { link: LINK, username: 'demo', password: PASSWORD })).body);
   await getSms(app, token, { ...VALID_SEARCH, dst: PRIVATE_NUMBER });
   await getSms(app, `${token}x`, { ...VALID_SEARCH, dst: PRIVATE_NUMBER });
   await getSms(app, token, { ...VALID_SEARCH, dst: 'x'.repeat(20) });
@@ -363,11 +466,11 @@ test('la consola nunca recibe clave, token, número, contenido ni parámetros de
   leak.message = `falla con ${PRIVATE_NUMBER} y ${PRIVATE_CONTENT} y ${WRONG_PASSWORD} y ${token}`;
   leak.sql = leak.message;
   leak.sqlMessage = leak.message;
-  db.failOn(/FROM connectus_pages\.sms WHERE/, leak);
+  db.failOn(/FROM connectus_pages\.sms_de_(?:cuenta|numero) WHERE/, leak);
   db.failOn(/audit_log/, leak);
   await getSms(app, token, { ...VALID_SEARCH, dst: PRIVATE_NUMBER });
   db.clearFailures();
-  db.failOn(/FROM connectus_pages\.login WHERE username/, leak);
+  db.failOn(/username_ok/, leak);
   await postLogin(app, { username: 'demo', password: WRONG_PASSWORD });
 
   const output = spies
@@ -377,7 +480,7 @@ test('la consola nunca recibe clave, token, número, contenido ni parámetros de
     .join('\n');
   spies.forEach((spy) => spy.mock.restore());
   assert.match(output, /ER_PARSE_ERROR/, 'la prueba debe haber pasado por el registro de errores');
-  for (const secret of [PRIVATE_NUMBER, PRIVATE_CONTENT, WRONG_PASSWORD, PASSWORD, TOKEN_SECRET, token]) {
+  for (const secret of [PRIVATE_NUMBER, PRIVATE_CONTENT, WRONG_PASSWORD, PASSWORD, TOKEN_SECRET, token, LINK]) {
     assert.equal(output.includes(secret), false);
   }
   assert.doesNotMatch(output, /SELECT|UPDATE|INSERT/);

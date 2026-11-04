@@ -17,13 +17,14 @@
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2l8 3v6c0 5-3.4 9.3-8 11-4.6-1.7-8-6-8-11V5z"/></svg>
           <span>Acceso de solo lectura</span>
         </p>
-        <h1 class="hero__title">Consulta de SMS</h1>
+        <h1 class="hero__title" id="hero-title" tabindex="-1">Consulta de SMS</h1>
+        <p class="hero__subtitle" id="hero-subtitle" hidden></p>
       </div>
-      <p class="hero__limit">
+      <p class="hero__limit" id="hero-limit">
         <svg class="icon hero__limit-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
         <span>
           <strong>Hasta 15 días</strong>
-          <span class="hero__limit-note">por consulta</span>
+          <span class="hero__limit-note">por consulta o exportación</span>
         </span>
       </p>
     </header>
@@ -32,7 +33,8 @@
       <p class="notice notice--error">Esta consulta necesita JavaScript para funcionar.</p>
     </noscript>
 
-    <p class="notice" id="load-notice" role="status">La consulta está tardando en cargar. Si no aparece, recarga la página.</p>
+    <p class="notice" id="load-notice" role="status">La consulta está tardando en cargar. Si no aparece, recarga la página o ábrela en el navegador.</p>
+    <p class="notice" id="link-notice" role="alert" hidden></p>
 
     <section class="card card--narrow" id="login-view" aria-labelledby="login-title" hidden>
       <div class="card__body">
@@ -46,7 +48,7 @@
             <label class="field__label" for="login-password">Contraseña</label>
             <input class="control" id="login-password" name="password" type="password" autocomplete="current-password" required>
           </div>
-          <button class="button" id="login-button" type="submit">Entrar</button>
+          <button class="button" id="login-button" type="button">Entrar</button>
         </form>
         <p class="notice" id="login-status" role="status" aria-live="polite"></p>
         <p class="notice notice--error" id="login-error" role="alert"></p>
@@ -54,72 +56,349 @@
     </section>
 
     <div class="stack" id="query-view" hidden>
-      <section class="card" aria-labelledby="search-title">
-        <div class="card__body">
-          <div class="card__head">
-            <div class="card__icon">
-              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>
+      <nav class="app-bar" aria-label="Navegación de la consulta">
+        <div class="field app-bar__account" id="account-choice" hidden>
+          <label class="field__label" for="account-select">Cuenta</label>
+          <select class="control" id="account-select" name="account"></select>
+        </div>
+        <div class="field app-bar__account" id="account-single" hidden>
+          <span class="field__label">Cuenta</span>
+          <span class="field__static" id="account-name"></span>
+        </div>
+        <div class="app-bar__menu">
+          <button class="menu-button" id="menu-query" type="button">Consulta de SMS</button>
+          <button class="menu-button" id="menu-deliveries" type="button">Envíos SMS</button>
+        </div>
+        <button class="button button--secondary" id="logout-button" type="button">Salir</button>
+      </nav>
+
+      <button class="button button--secondary back-button" id="back-button" type="button" hidden>Volver</button>
+
+      <div class="stack" id="screen-query">
+        <section class="card" aria-labelledby="search-title">
+          <div class="card__body">
+            <div class="card__head">
+              <div class="card__icon">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>
+              </div>
+              <h2 class="card__title card__heading" id="search-title">Buscar mensajes</h2>
             </div>
-            <h2 class="card__title card__heading" id="search-title">Buscar mensajes</h2>
-            <button class="button button--secondary" id="logout-button" type="button">Salir</button>
+            <p class="muted card__intro">El número destino es opcional. Si lo dejas vacío, verás todos los SMS del período.</p>
+
+            <form class="filters" id="search-form" novalidate>
+              <div class="field">
+                <label class="field__label" for="filter-number">Número destino</label>
+                <input class="control" id="filter-number" name="dst" type="tel" inputmode="tel" autocomplete="off" placeholder="Opcional: 56900000000">
+              </div>
+              <div class="field">
+                <label class="field__label" for="filter-start">Desde</label>
+                <input class="control" id="filter-start" name="start" type="date" required>
+              </div>
+              <div class="field">
+                <label class="field__label" for="filter-end">Hasta</label>
+                <input class="control" id="filter-end" name="end" type="date" required>
+              </div>
+              <button class="button" id="search-button" type="button">Buscar</button>
+            </form>
+
+            <p class="notice" id="search-status" role="status" aria-live="polite"></p>
+            <p class="notice notice--error" id="search-error" role="alert"></p>
           </div>
-          <p class="muted card__intro">El número destino es opcional. Si lo dejas vacío, verás todos los SMS del período.</p>
+        </section>
 
-          <form class="filters" id="search-form" novalidate>
-            <div class="field" id="account-choice" hidden>
-              <label class="field__label" for="account-select">Cuenta</label>
-              <select class="control" id="account-select" name="account"></select>
+        <section class="card" id="results" aria-labelledby="results-title" aria-busy="false" hidden>
+          <div class="card__body card__body--compact">
+            <div class="card__head card__head--wrap">
+              <div class="card__heading">
+                <h2 class="card__title" id="results-title" tabindex="-1">Resultados</h2>
+                <p class="muted" id="results-summary"></p>
+              </div>
+              <button class="button button--secondary" id="export-results" type="button">Exportar resultados</button>
             </div>
-            <div class="field" id="account-single" hidden>
-              <span class="field__label">Cuenta</span>
-              <span class="field__static" id="account-name"></span>
-            </div>
-            <div class="field">
-              <label class="field__label" for="filter-number">Número destino</label>
-              <input class="control" id="filter-number" name="dst" type="tel" inputmode="tel" autocomplete="off" placeholder="Opcional: 56900000000">
-            </div>
-            <div class="field">
-              <label class="field__label" for="filter-start">Desde</label>
-              <input class="control" id="filter-start" name="start" type="date" required>
-            </div>
-            <div class="field">
-              <label class="field__label" for="filter-end">Hasta</label>
-              <input class="control" id="filter-end" name="end" type="date" required>
-            </div>
-            <button class="button" id="search-button" type="submit">Buscar</button>
-          </form>
+            <p class="notice notice--status" id="export-results-status" role="status" aria-live="polite"></p>
+            <p class="notice notice--error" id="export-results-error" role="alert"></p>
+          </div>
+          <div class="table-wrap" tabindex="0" role="region" aria-labelledby="results-title">
+            <table class="sms-table">
+              <caption class="visually-hidden">Mensajes SMS encontrados para los filtros indicados</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Fecha</th>
+                  <th scope="col">Número destino</th>
+                  <th scope="col">Mensaje</th>
+                  <th scope="col">Estado</th>
+                  <th scope="col">Envío</th>
+                </tr>
+              </thead>
+              <tbody id="results-body"></tbody>
+            </table>
+          </div>
+          <nav class="pager" id="pager" aria-label="Paginación de resultados" hidden>
+            <button class="button button--secondary" id="page-prev" type="button">Anterior</button>
+            <span class="muted" id="page-label"></span>
+            <button class="button button--secondary" id="page-next" type="button">Siguiente</button>
+          </nav>
+        </section>
 
-          <p class="notice" id="search-status" role="status" aria-live="polite"></p>
-          <p class="notice notice--error" id="search-error" role="alert"></p>
-        </div>
-      </section>
+        <section class="card" aria-labelledby="full-report-title">
+          <div class="card__body">
+            <h2 class="card__title" id="full-report-title">Reporte completo</h2>
+            <p class="muted card__intro">Exporta todos los SMS de la cuenta seleccionada en segundo plano.</p>
+            <form class="filters" id="full-report-form" novalidate>
+              <div class="field">
+                <label class="field__label" for="full-report-start">Desde</label>
+                <input class="control" id="full-report-start" name="start" type="date" required>
+              </div>
+              <div class="field">
+                <label class="field__label" for="full-report-end">Hasta</label>
+                <input class="control" id="full-report-end" name="end" type="date" required>
+              </div>
+              <button class="button" id="full-report-button" type="button">Generar CSV</button>
+            </form>
+            <p class="notice notice--status" id="full-report-status" role="status" aria-live="polite"></p>
+            <p class="notice notice--error" id="full-report-error" role="alert"></p>
+          </div>
+        </section>
 
-      <section class="card" id="results" aria-labelledby="results-title" aria-busy="false" hidden>
-        <div class="card__body card__body--compact">
-          <h2 class="card__title" id="results-title" tabindex="-1">Resultados</h2>
-          <p class="muted" id="results-summary"></p>
+        <section class="card" id="exports-card" aria-labelledby="exports-title" aria-busy="false">
+          <div class="card__body card__body--compact">
+            <div class="card__head card__head--wrap">
+              <div class="card__heading">
+                <h2 class="card__title" id="exports-title">Exportaciones recientes</h2>
+                <p class="muted">Los archivos se generan en segundo plano y aparecen aquí al finalizar.</p>
+                <p class="muted" id="exports-note" hidden>Si la descarga falla, esta página puede cerrarse y tendrás que volver a ingresar tu clave.</p>
+              </div>
+              <span class="status-pill status-pill--info" id="exports-generating" hidden>Generando</span>
+              <button class="button button--secondary" id="exports-refresh" type="button">Actualizar</button>
+            </div>
+            <p class="notice notice--status" id="exports-status" role="status" aria-live="polite"></p>
+            <p class="notice notice--error" id="exports-error" role="alert"></p>
+          </div>
+          <div class="table-wrap" id="exports-table" tabindex="0" role="region" aria-labelledby="exports-title" hidden>
+            <table class="sms-table">
+              <caption class="visually-hidden">Exportaciones pedidas, de la más nueva a la más antigua</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Cuenta</th>
+                  <th scope="col">Filtro</th>
+                  <th scope="col">Período</th>
+                  <th scope="col">Estado</th>
+                  <th scope="col">Archivo</th>
+                </tr>
+              </thead>
+              <tbody id="exports-body"></tbody>
+            </table>
+          </div>
+          <nav class="pager" id="exports-pager" aria-label="Paginación de exportaciones" hidden>
+            <button class="button button--secondary" id="exports-prev" type="button">Anterior</button>
+            <span class="muted" id="exports-page-label"></span>
+            <button class="button button--secondary" id="exports-next" type="button">Siguiente</button>
+          </nav>
+        </section>
+      </div>
+
+      <div class="stack" id="screen-deliveries" hidden>
+        <section class="card" id="deliveries-card" aria-labelledby="deliveries-title" aria-busy="false">
+          <div class="card__body card__body--compact">
+            <h2 class="card__title" id="deliveries-title">Tus envíos</h2>
+            <form class="filters" id="deliveries-form" novalidate>
+              <div class="field">
+                <label class="field__label" for="deliveries-query">Buscar</label>
+                <input class="control" id="deliveries-query" name="q" type="search" autocomplete="off" maxlength="100" placeholder="Nombre del envío">
+              </div>
+              <button class="button" id="deliveries-button" type="button">Buscar</button>
+            </form>
+            <p class="notice notice--status" id="deliveries-status" role="status" aria-live="polite"></p>
+            <p class="notice notice--error" id="deliveries-error" role="alert"></p>
+          </div>
+          <div class="table-wrap" id="deliveries-table" tabindex="0" role="region" aria-labelledby="deliveries-title" hidden>
+            <table class="sms-table">
+              <caption class="visually-hidden">Envíos SMS de la cuenta, del más nuevo al más antiguo</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Nombre</th>
+                  <th scope="col">Tipo</th>
+                  <th scope="col">Creado</th>
+                  <th scope="col">Envío</th>
+                  <th scope="col"><span class="visually-hidden">Ver detalle</span></th>
+                </tr>
+              </thead>
+              <tbody id="deliveries-body"></tbody>
+            </table>
+          </div>
+          <nav class="pager" id="deliveries-pager" aria-label="Paginación de envíos" hidden>
+            <button class="button button--secondary" id="deliveries-prev" type="button">Anterior</button>
+            <span class="muted" id="deliveries-page-label"></span>
+            <button class="button button--secondary" id="deliveries-next" type="button">Siguiente</button>
+          </nav>
+        </section>
+      </div>
+
+      <div class="stack" id="screen-delivery" hidden>
+        <div class="notices">
+          <p class="notice notice--status" id="delivery-status" role="status" aria-live="polite"></p>
+          <p class="notice notice--error" id="delivery-error" role="alert"></p>
         </div>
-        <div class="table-wrap" tabindex="0" role="region" aria-labelledby="results-title">
-          <table class="sms-table">
-            <caption class="visually-hidden">Mensajes SMS encontrados para los filtros indicados</caption>
-            <thead>
-              <tr>
-                <th scope="col">Fecha</th>
-                <th scope="col">Número destino</th>
-                <th scope="col">Mensaje</th>
-                <th scope="col">Estado</th>
-                <th scope="col">Envío</th>
-              </tr>
-            </thead>
-            <tbody id="results-body"></tbody>
-          </table>
+
+        <section class="card" id="delivery-generating" aria-labelledby="delivery-generating-title" hidden>
+          <div class="card__body">
+            <h2 class="card__title" id="delivery-generating-title">El envío está siendo generado</h2>
+            <p class="muted card__intro">Procesando</p>
+            <progress class="progress-bar" id="delivery-progress" aria-labelledby="delivery-generating-title"></progress>
+            <p class="muted" id="delivery-progress-label"></p>
+            <dl class="facts" id="delivery-generating-facts"></dl>
+            <p class="notice notice--status" id="delivery-progress-status" role="status" aria-live="polite"></p>
+            <button class="button button--secondary" id="delivery-progress-refresh" type="button" hidden>Actualizar</button>
+          </div>
+        </section>
+
+        <section class="card" id="delivery-failed" aria-labelledby="delivery-failed-title" hidden>
+          <div class="card__body">
+            <h2 class="card__title" id="delivery-failed-title">El envío falló.</h2>
+            <p class="muted" id="delivery-failed-reason"></p>
+          </div>
+        </section>
+
+        <div class="stack" id="delivery-complete" hidden>
+          <section class="card" id="report-card" aria-labelledby="report-title">
+            <div class="card__body">
+              <div class="card__head card__head--wrap">
+                <h2 class="card__title card__heading" id="report-title">Reporte del envío</h2>
+                <button class="button" id="report-button" type="button">Generar reporte</button>
+                <button class="button button--secondary" id="report-regenerate" type="button" hidden>Generar de nuevo</button>
+                <button class="button button--secondary" id="report-refresh" type="button" hidden>Actualizar</button>
+              </div>
+              <p class="muted" id="report-generated"></p>
+              <p class="muted" id="report-note" hidden>Si la descarga falla, esta página puede cerrarse y tendrás que volver a ingresar tu clave.</p>
+              <p class="notice notice--status" id="report-status" role="status" aria-live="polite"></p>
+              <p class="notice notice--error" id="report-error" role="alert"></p>
+            </div>
+          </section>
+
+          <section class="card" aria-labelledby="stats-title">
+            <div class="card__body card__body--compact">
+              <div class="card__head card__head--wrap">
+                <div class="card__heading">
+                  <h2 class="card__title" id="stats-title">Detalles</h2>
+                  <p class="muted" id="stats-updated"></p>
+                </div>
+                <div class="tab-group" role="group" aria-label="Destino de los mensajes">
+                  <button class="tab-button" id="tab-national" type="button" aria-pressed="true">Nacional</button>
+                  <button class="tab-button" id="tab-international" type="button" aria-pressed="false">Internacional</button>
+                </div>
+              </div>
+              <p class="notice notice--status" id="stats-status" role="status" aria-live="polite"></p>
+              <p class="notice notice--error" id="stats-error" role="alert"></p>
+              <button class="button button--secondary" id="stats-refresh" type="button" hidden>Actualizar</button>
+            </div>
+            <div class="table-wrap" id="stats-national" tabindex="0" role="region" aria-label="Conteos nacionales" hidden></div>
+            <div class="table-wrap" id="stats-international" tabindex="0" role="region" aria-label="Conteos internacionales" hidden></div>
+          </section>
+
+          <section class="card" id="messages-card" aria-labelledby="messages-title" aria-busy="false">
+            <div class="card__body card__body--compact">
+              <h2 class="card__title" id="messages-title">Mensajes del envío</h2>
+              <form class="filters" id="messages-form" novalidate>
+                <div class="field">
+                  <label class="field__label" for="messages-number">Buscar</label>
+                  <input class="control" id="messages-number" name="dst" type="tel" inputmode="tel" autocomplete="off" placeholder="Número destino exacto">
+                </div>
+                <button class="button" id="messages-button" type="button">Buscar</button>
+              </form>
+              <p class="notice notice--status" id="messages-status" role="status" aria-live="polite"></p>
+              <p class="notice notice--error" id="messages-error" role="alert"></p>
+            </div>
+            <div class="table-wrap" id="messages-table" tabindex="0" role="region" aria-labelledby="messages-title" hidden>
+              <table class="sms-table">
+                <caption class="visually-hidden">Mensajes de este envío</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Estado</th>
+                    <th scope="col">Identificador</th>
+                    <th scope="col">Destino</th>
+                    <th scope="col">Proveedor</th>
+                    <th scope="col">País</th>
+                    <th scope="col">Actualizado</th>
+                  </tr>
+                </thead>
+                <tbody id="messages-body"></tbody>
+              </table>
+            </div>
+            <nav class="pager" id="messages-pager" aria-label="Paginación de mensajes" hidden>
+              <button class="button button--secondary" id="messages-prev" type="button">Anterior</button>
+              <span class="muted" id="messages-page-label"></span>
+              <button class="button button--secondary" id="messages-next" type="button">Siguiente</button>
+            </nav>
+          </section>
+
+          <div class="card-grid">
+            <section class="card" aria-labelledby="delivery-data-title">
+              <div class="card__body">
+                <h2 class="card__title" id="delivery-data-title">Datos del envío</h2>
+                <dl class="facts" id="delivery-facts"></dl>
+              </div>
+            </section>
+
+            <section class="card" aria-labelledby="chart-title">
+              <div class="card__body">
+                <h2 class="card__title" id="chart-title">Entregas</h2>
+                <div class="donut" id="chart-area" hidden>
+                  <svg class="donut__chart" id="chart-svg" viewBox="0 0 42 42" role="img" aria-labelledby="chart-title" focusable="false"></svg>
+                  <ul class="donut__legend" id="chart-legend"></ul>
+                </div>
+                <p class="muted" id="chart-empty" hidden>Todavía no hay mensajes que contar.</p>
+              </div>
+            </section>
+
+            <section class="card" id="responses-card" aria-labelledby="responses-title">
+              <div class="card__body">
+                <h2 class="card__title" id="responses-title">Respuestas</h2>
+                <dl class="facts" id="responses-facts"></dl>
+                <div class="card__actions">
+                  <button class="button button--secondary" id="responses-button" type="button" hidden>Generar archivo</button>
+                  <button class="button button--secondary" id="responses-regenerate" type="button" hidden>Generar de nuevo</button>
+                  <button class="button button--secondary" id="responses-refresh" type="button" hidden>Actualizar</button>
+                </div>
+                <p class="muted" id="responses-generated"></p>
+                <p class="muted" id="responses-note" hidden>Si la descarga falla, esta página puede cerrarse y tendrás que volver a ingresar tu clave.</p>
+                <p class="notice notice--status" id="responses-status" role="status" aria-live="polite"></p>
+                <p class="notice notice--error" id="responses-error" role="alert"></p>
+              </div>
+            </section>
+
+            <section class="card" id="link-card" aria-labelledby="link-title" hidden>
+              <div class="card__body">
+                <h2 class="card__title" id="link-title">Link corto</h2>
+                <dl class="facts" id="link-facts"></dl>
+              </div>
+            </section>
+          </div>
         </div>
-        <nav class="pager" id="pager" aria-label="Paginación de resultados" hidden>
-          <button class="button button--secondary" id="page-prev" type="button">Anterior</button>
-          <span class="muted" id="page-label"></span>
-          <button class="button button--secondary" id="page-next" type="button">Siguiente</button>
-        </nav>
-      </section>
+      </div>
+
+      <div class="stack" id="screen-sms" hidden>
+        <div class="notices">
+          <p class="notice notice--status" id="sms-status" role="status" aria-live="polite"></p>
+          <p class="notice notice--error" id="sms-error" role="alert"></p>
+        </div>
+        <section class="card" id="sms-card" aria-labelledby="sms-card-title" hidden>
+          <div class="card__body">
+            <h2 class="card__title" id="sms-card-title">Detalle</h2>
+            <dl class="facts" id="sms-facts"></dl>
+            <p class="sms-bubble" id="sms-content"></p>
+            <p class="muted" id="sms-equivalent"></p>
+          </div>
+        </section>
+      </div>
+
+      <div class="download-help" id="download-help" hidden>
+        <p>¿No se descargó? Abre esta consulta en tu navegador.</p>
+        <button class="button button--secondary" id="download-help-show" type="button">Mostrar enlace</button>
+        <div class="field" id="download-help-field" hidden>
+          <label class="field__label" for="download-help-link">Enlace de esta consulta</label>
+          <input class="control" id="download-help-link" type="text" autocomplete="off" spellcheck="false" readonly>
+        </div>
+      </div>
     </div>
   </main>
 </body>

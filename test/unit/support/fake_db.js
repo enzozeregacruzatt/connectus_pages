@@ -19,6 +19,7 @@ function createFakeDb(seed = {}) {
   const findById = (id) => state.logins.find((row) => row.id === id);
 
   function selectSms(sql, params) {
+    if (/sms_de_numero/.test(sql) !== /dst_number = \?/.test(sql)) throw new Error(`Vista equivocada para el filtro: ${sql}`);
     const [account, lo, ...rest] = params;
     let index = 0;
     const hi = /AND id <= \?/.test(sql) ? rest[index++] : Number.POSITIVE_INFINITY;
@@ -37,10 +38,19 @@ function createFakeDb(seed = {}) {
   }
 
   function run(sql, params) {
-    if (/FROM connectus_pages\.login WHERE username = \?/.test(sql)) {
-      return state.logins
-        .filter((row) => row.username === params[0])
-        .map((row) => ({ ...row, password_hash: row.passwordHash, token_version: row.tokenVersion, locked: isLocked(row) }));
+    if (/\(username = \?\) AS username_ok/.test(sql)) {
+      const row = findById(params[1]);
+      if (!row) return [];
+      // Como en la base: la intercalación no distingue mayúsculas, y una comparación llega como texto por bigNumberStrings.
+      const usernameOk = row.username.toLowerCase() === params[0].toLowerCase() ? '1' : '0';
+      return [{
+        ...row,
+        password_hash: row.passwordHash,
+        token_version: row.tokenVersion,
+        link_version: row.linkVersion,
+        username_ok: usernameOk,
+        locked: isLocked(row),
+      }];
     }
     if (/FROM connectus_pages\.login WHERE id = \?/.test(sql)) {
       const row = findById(params[0]);
@@ -87,12 +97,12 @@ function createFakeDb(seed = {}) {
       if (/AS hi/.test(sql)) row.hi = String(Math.max(0, ...ids(params[1])));
       return [row];
     }
-    if (/FROM connectus_pages\.sms WHERE id_account = \?/.test(sql)) return selectSms(sql, params);
+    if (/FROM connectus_pages\.sms_de_(?:cuenta|numero) WHERE id_account = \?/.test(sql)) return selectSms(sql, params);
     if (/FROM connectus_pages\.delivery WHERE id IN \(\?\) AND id_account = \?/.test(sql)) {
       const [ids, account] = params;
       return state.deliveries
         .filter((row) => ids.includes(row.id) && row.id_account === account)
-        .map(({ id, name }) => ({ id, name }));
+        .map(({ id, id_unique, name, id_product }) => ({ id, id_unique, name, id_product }));
     }
     throw new Error(`Sentencia desconocida para la base falsa: ${sql}`);
   }

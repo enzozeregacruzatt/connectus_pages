@@ -7,11 +7,17 @@ const { after, before } = require('node:test');
 
 const { createApp } = require('../../../src/app');
 const { hashPassword } = require('../../../src/auth');
+const { signLink } = require('../../../src/link');
 const { createFakeDb } = require('./fake_db');
 
 const TOKEN_SECRET = 'secreto-de-pruebas-que-supera-los-32-bytes';
+const LINK_SECRET_A = 'ranura-a-de-pruebas-que-supera-los-32-bytes';
+const LINK_SECRET_B = 'ranura-b-de-pruebas-que-supera-los-32-bytes';
+const LINK_SECRETS = { a: LINK_SECRET_A, b: LINK_SECRET_B };
 const PASSWORD = 'clave-de-prueba-correcta';
 const NOW_MS = 1_800_000_000_000;
+const NOW_SECONDS = NOW_MS / 1000;
+const DAY_SECONDS = 86400;
 
 let passwordHash;
 let publicDir;
@@ -36,6 +42,7 @@ function loginRow(overrides = {}) {
     passwordHash,
     active: 1,
     tokenVersion: 0,
+    linkVersion: 0,
     failedAttempts: 0,
     lockedUntil: 0,
     lastLoginAt: null,
@@ -68,7 +75,14 @@ function buildApp({ seed, config, clock, loginFailureFloorMs = 0 } = {}) {
   const clockState = { now: NOW_MS };
   const app = createApp({
     db,
-    config: { stage: 'test', tokenSecret: TOKEN_SECRET, frameAncestors: 'https://embed.example.com', ...config },
+    config: {
+      stage: 'test',
+      tokenSecret: TOKEN_SECRET,
+      linkSecrets: LINK_SECRETS,
+      frameAncestors: 'https://embed.example.com',
+      corsOpaque: false,
+      ...config,
+    },
     clock: clock || (() => clockState.now),
     publicDir,
     loginFailureFloorMs,
@@ -76,12 +90,24 @@ function buildApp({ seed, config, clock, loginFailureFloorMs = 0 } = {}) {
   return { app, db, clockState };
 }
 
+function linkFor(overrides = {}) {
+  const { secret = LINK_SECRET_A, ...fields } = overrides;
+  return signLink({ slot: 'a', loginId: 1, linkVersion: 0, exp: NOW_SECONDS + 180 * DAY_SECONDS, ...fields }, secret);
+}
+
+// Un objeto sin `link` lleva el enlace vigente del login 1. Para mandar otro, o ninguno, se indica: { link: undefined } no viaja.
+function withLink(body) {
+  if (body === null || typeof body !== 'object' || Array.isArray(body) || Buffer.isBuffer(body) || 'link' in body) return body;
+  return { link: linkFor(), ...body };
+}
+
 function postLogin(app, body, headers = { 'content-type': 'application/json' }) {
+  const payload = withLink(body);
   return app.handle({
     method: 'POST',
     path: '/api/login',
     headers,
-    body: typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body),
+    body: typeof payload === 'string' || Buffer.isBuffer(payload) ? payload : JSON.stringify(payload),
     ip: '203.0.113.10',
   });
 }
@@ -109,12 +135,18 @@ async function signIn(app) {
 const VALID_SEARCH = { account: '101', start: '2026-10-01', end: '2026-10-15' };
 
 module.exports = {
+  DAY_SECONDS,
+  LINK_SECRETS,
+  LINK_SECRET_A,
+  LINK_SECRET_B,
   NOW_MS,
+  NOW_SECONDS,
   PASSWORD,
   TOKEN_SECRET,
   VALID_SEARCH,
   buildApp,
   getSms,
+  linkFor,
   loginRow,
   postLogin,
   signIn,

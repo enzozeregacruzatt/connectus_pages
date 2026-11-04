@@ -13,6 +13,7 @@ const { hashPassword } = require('../../src/auth');
 const { loadConfig } = require('../../src/config');
 const { createDb } = require('../../src/db');
 const { createHandler } = require('../../src/handler');
+const { signLink } = require('../../src/link');
 const { createTcpProxy } = require('./support/proxy_tcp');
 const { adminConnectionOptions, loadTestEnv, localConfigEnv } = require('./support/test_env');
 
@@ -22,7 +23,7 @@ const SEARCH = { account: '101', start: '2026-10-10', end: '2026-10-10' };
 const REGISTER_FAILURE = /^UPDATE connectus_pages\.login SET locked_until/;
 const REGISTER_SUCCESS = /^UPDATE connectus_pages\.login SET failed_attempts = 0/;
 const INSERT_AUDIT = /^INSERT INTO connectus_pages\.audit_log/;
-const CONTRACT_SEARCH = /FROM connectus_pages\.sms WHERE/;
+const CONTRACT_SEARCH = /FROM connectus_pages\.sms_de_cuenta WHERE/;
 const SELECT_COLUMNS = 'id, id_delivery, dst_number, sms_content, status, created_at';
 
 function restEvent(overrides) {
@@ -40,11 +41,14 @@ function restEvent(overrides) {
   };
 }
 
-const loginEvent = (username, password) => restEvent({
+// El enlace del login de estas pruebas: se firma cuando ya se conoce su id.
+let validLink = null;
+
+const loginEvent = (username, password, link = validLink) => restEvent({
   httpMethod: 'POST',
   path: '/api/login',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ username, password }),
+  body: JSON.stringify({ link, username, password }),
 });
 
 const searchEvent = (token) => restEvent({
@@ -113,11 +117,58 @@ describe('cortes de la base', () => {
     );
     loginId = created.insertId;
     await admin.query('INSERT INTO connectus_pages.login_account (id_login, id_account) VALUES (?, 101)', [loginId]);
+    validLink = signLink(
+      { slot: 'a', loginId, linkVersion: 0, exp: Math.floor(Date.now() / 1000) + 180 * 86400 },
+      env.linkSecretA
+    );
   });
 
   after(async () => {
     await removeLogin();
     await admin.end();
+  });
+
+  describe('un rechazo por el enlace, antes de la base', () => {
+    let proxy;
+    let db;
+    let handler;
+
+    before(async () => {
+      proxy = await createTcpProxy(Number(env.port)).listen();
+      db = createDb({ ...config, db: { ...config.db, port: proxy.port } });
+      const app = createApp({ db, config, loginFailureFloorMs: 0 });
+      handler = createHandler(async () => app);
+    });
+
+    after(async () => {
+      await db.end();
+      await proxy.close();
+    });
+
+    it('un rechazo anónimo no abre ninguna conexión con mysqld, y el primero que pasa el enlace sí', async () => {
+      const output = captureConsoleError();
+      for (const link of [
+        null,
+        '',
+        'l1.a.1.0.1.x',
+        `${validLink.slice(0, -1)}${validLink.at(-1) === 'A' ? 'B' : 'A'}`,
+        signLink({ slot: 'a', loginId, linkVersion: 0, exp: 2000000000 }, 'otro-secreto-que-supera-los-32-bytes-de-largo'),
+        signLink({ slot: 'a', loginId, linkVersion: 0, exp: Math.floor(Date.now() / 1000) - 1 }, env.linkSecretA),
+        signLink({ slot: 'a', loginId, linkVersion: 0, exp: 2147483647 }, env.linkSecretA),
+        signLink({ slot: 'b', loginId, linkVersion: 0, exp: 2000000000 }, env.linkSecretA),
+      ]) {
+        const response = await handler(loginEvent(USERNAME, PASSWORD, link));
+        assert.equal(response.statusCode, 401);
+        assert.equal(JSON.parse(response.body).error, 'invalid_link');
+      }
+      const logged = output.stop();
+      assert.equal(proxy.connections, 0, 'mysql2 no debe abrir conexión');
+      assert.match(logged, /link_rejected/);
+      assert.equal(logged.includes(validLink), false);
+
+      assert.equal((await handler(loginEvent(USERNAME, PASSWORD))).statusCode, 200);
+      assert.equal(proxy.connections, 1, 'el control: un login que pasa el enlace sí la abre');
+    });
   });
 
   describe('plazo por petición, con el handler real', () => {

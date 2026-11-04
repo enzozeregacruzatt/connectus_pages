@@ -10,17 +10,20 @@
 #                     No hay host por defecto. Exige --ssl-mode=VERIFY_IDENTITY, porque por esta conexión viajan las claves
 #                     nuevas y REQUIRE SSL no cubre al master. VERIFY_CA solo se acepta hacia 127.0.0.1. Solo admite -h, -P,
 #                     --host=, --port=, --protocol=TCP, --ssl-mode= y --ssl-ca=; cualquier otro argumento termina con error.
-#   OUT_ENV           archivo nuevo, 0600 y fuera de este repo, donde dejar DB_USER y DB_PASSWORD de pages_app. Sin esto, la clave no se guarda
-#                     en ningún lado y hay que fijar otra con ALTER USER.
+#   OUT_ENV           archivo nuevo, 0600 y fuera de este repo, donde dejar DB_USER y DB_PASSWORD de pages_app, y WORKER_DB_USER y
+#                     WORKER_DB_PASSWORD de pages_worker. Sin esto, las claves no se guardan en ningún lado y hay que fijar otras con
+#                     ALTER USER.
 #
-# Paso siguiente, fuera de las pruebas: subir la clave de pages_app a Parameter Store. Con file:// no queda en argv.
+# Paso siguiente, fuera de las pruebas: subir las claves a Parameter Store. Con file:// no quedan en argv.
 #   (umask 077; sed -n 's/^DB_PASSWORD=//p' <OUT_ENV> | tr -d '\n' > <archivo>)
 #   aws ssm put-parameter --name /connectus-pages/prod/db_password --type SecureString --value file://<archivo>
+#   (umask 077; sed -n 's/^WORKER_DB_PASSWORD=//p' <OUT_ENV> | tr -d '\n' > <archivo>)
+#   aws ssm put-parameter --name /connectus-pages/prod/worker_db_password --type SecureString --value file://<archivo>
 #   rm <archivo> <OUT_ENV>
 #
 # Vuelta atrás, si falla a mitad de camino, como master:
 #   DROP DATABASE IF EXISTS connectus_pages;
-#   DROP USER IF EXISTS 'pages_owner'@'%', 'pages_app'@'%';
+#   DROP USER IF EXISTS 'pages_owner'@'%', 'pages_app'@'%', 'pages_worker'@'%';
 set -euo pipefail
 umask 077
 
@@ -138,21 +141,22 @@ if [ -n "$OUT_ENV" ]; then
   (set -C; : > "$OUT_ENV") 2>/dev/null || die "no se pudo crear OUT_ENV ($OUT_ENV): si ya existe, no se sobrescribe."
   out_env_created=1
 else
-  printf 'aprovisionar_bd: sin OUT_ENV, la clave de pages_app no se guarda en ningún lado.\n' >&2
+  printf 'aprovisionar_bd: sin OUT_ENV, las claves de pages_app y pages_worker no se guardan en ningún lado.\n' >&2
 fi
 
 # Las claves solo existen en $T, con 0600: python las escribe y mysql las lee por stdin o por archivo de opciones.
-python3 -I - "$SQL_DIR/00_cuentas.sql" "$T/00.sql" "$T/owner.cnf" "$T/app.clave" <<'EOF'
+python3 -I - "$SQL_DIR/00_cuentas.sql" "$T/00.sql" "$T/owner.cnf" "$T/app.clave" "$T/worker.clave" <<'EOF'
 import re, secrets, sys
-origen, copia, owner_cnf, app_clave = sys.argv[1:]
+origen, copia, owner_cnf, app_clave, worker_clave = sys.argv[1:]
 sql = open(origen, encoding='utf-8').read()
-claves = {'__PW_OWNER__': secrets.token_hex(24), '__PW_APP__': secrets.token_hex(24)}
+claves = {'__PW_OWNER__': secrets.token_hex(24), '__PW_APP__': secrets.token_hex(24), '__PW_WORKER__': secrets.token_hex(24)}
 for marcador, clave in claves.items():
     sql, n = re.subn(marcador, "'%s'" % clave, sql)
     n == 1 or sys.exit('se esperaba un marcador %s y hay %d' % (marcador, n))
 open(copia, 'w', encoding='utf-8').write(sql)
 open(owner_cnf, 'w').write('[client]\nuser=pages_owner\npassword=%s\n' % claves['__PW_OWNER__'])
 open(app_clave, 'w').write(claves['__PW_APP__'])
+open(worker_clave, 'w').write(claves['__PW_WORKER__'])
 EOF
 
 # --no-defaults y --defaults-file, y no --defaults-extra-file: ~/.my.cnf se lee después del archivo extra y le ganaría, así
@@ -169,7 +173,7 @@ as_owner() {
 echo 'aprovisionar_bd: 00, cuentas (como master)' >&2
 if ! as_master < "$T/00.sql" 2> "$T/00.err"; then
   if grep -q 'ERROR 1396' "$T/00.err"; then
-    die 'pages_owner o pages_app ya existen: no se genera otra clave. Para rehacerlo, ver "Vuelta atrás" en este script.'
+    die 'pages_owner, pages_app o pages_worker ya existen: no se genera otra clave. Para rehacerlo, ver "Vuelta atrás" en este script.'
   fi
   cat "$T/00.err" >&2
   die 'falló el paso 00. Ver "Vuelta atrás" en este script.'
@@ -181,11 +185,20 @@ as_owner < "$SQL_DIR/01_esquema.sql" || die 'falló el paso 01. Ver "Vuelta atr�
 echo 'aprovisionar_bd: 02, permisos de pages_app (como pages_owner)' >&2
 as_owner < "$SQL_DIR/02_permisos_app.sql" || die 'falló el paso 02. Ver "Vuelta atrás" en este script.'
 
+echo 'aprovisionar_bd: 02, permisos de pages_worker (como pages_owner)' >&2
+as_owner < "$SQL_DIR/02_permisos_worker.sql" || die 'falló el paso 02. Ver "Vuelta atrás" en este script.'
+
 echo 'aprovisionar_bd: 03, bloquear pages_owner (como master)' >&2
 as_master < "$SQL_DIR/03_bloquear_owner.sql" || die 'falló el paso 03: pages_owner sigue sin bloquear. Córrelo a mano.'
 
 if [ -n "$OUT_ENV" ]; then
-  { printf 'DB_USER=pages_app\nDB_PASSWORD='; cat "$T/app.clave"; printf '\n'; } >> "$OUT_ENV"
+  {
+    printf 'DB_USER=pages_app\nDB_PASSWORD='
+    cat "$T/app.clave"
+    printf '\nWORKER_DB_USER=pages_worker\nWORKER_DB_PASSWORD='
+    cat "$T/worker.clave"
+    printf '\n'
+  } >> "$OUT_ENV"
 fi
 finished=1
 echo 'aprovisionar_bd: listo. pages_owner quedó bloqueada.' >&2

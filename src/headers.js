@@ -2,6 +2,17 @@
 
 const HTTPS_ORIGIN = /^https:\/\/[a-z0-9.-]+(:[0-9]{1,5})?$/;
 const LOCAL_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1)(:[0-9]{1,5})?$/;
+const FRAME_ANCESTORS_OPEN = 'sin-restriccion';
+
+// Un documento sandbox sin allow-same-origin tiene origen opaco: fetch a su propia API es cross-origin y llega con Origin: null.
+// Nunca Allow-Credentials: la sesión viaja en Authorization, y sin cookies no hay autoridad ambiental que abrirle a nadie.
+const OPAQUE_ORIGIN = 'null';
+const OPAQUE_CORS_HEADERS = { 'Access-Control-Allow-Origin': OPAQUE_ORIGIN, Vary: 'Origin' };
+const OPAQUE_PREFLIGHT_HEADERS = {
+  'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Max-Age': '600',
+};
 
 // Se separa solo por el espacio literal: un salto de línea queda dentro del elemento, el
 // elemento no calza y se descarta, así que nunca llega a la cabecera.
@@ -21,11 +32,13 @@ function parseFrameAncestors(raw, stage) {
 }
 
 function buildContentSecurityPolicy(frameAncestors, stage) {
+  const policy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
+    + "connect-src 'self'; form-action 'none'; base-uri 'none'";
+  // Omitir, porque frame-ancestors * bloquea justo los ancestros probables en un BI de escritorio: file: y orígenes opacos.
+  // Comparación exacta: con un espacio, mayúsculas u otro origen al lado, cae en la lista y queda cerrado.
+  if (frameAncestors === FRAME_ANCESTORS_OPEN) return policy;
   const allowed = parseFrameAncestors(frameAncestors, stage);
-  const ancestors = allowed.length > 0 ? allowed.join(' ') : "'none'";
-  return "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
-    + "connect-src 'self'; form-action 'none'; base-uri 'none'; "
-    + `frame-ancestors ${ancestors}`;
+  return `${policy}; frame-ancestors ${allowed.length > 0 ? allowed.join(' ') : "'none'"}`;
 }
 
 function buildSecurityHeaders({ frameAncestors, stage } = {}) {
@@ -38,4 +51,12 @@ function buildSecurityHeaders({ frameAncestors, stage } = {}) {
   };
 }
 
-module.exports = { buildContentSecurityPolicy, buildSecurityHeaders, parseFrameAncestors };
+module.exports = {
+  FRAME_ANCESTORS_OPEN,
+  OPAQUE_CORS_HEADERS,
+  OPAQUE_ORIGIN,
+  OPAQUE_PREFLIGHT_HEADERS,
+  buildContentSecurityPolicy,
+  buildSecurityHeaders,
+  parseFrameAncestors,
+};

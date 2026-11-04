@@ -51,6 +51,30 @@ for (const [method, path, allow] of [
   });
 }
 
+for (const [method, path, allow] of [
+  ['PUT', '/api/exports', 'GET, POST'],
+  ['DELETE', '/api/exports', 'GET, POST'],
+  ['constructor', '/api/exports', 'GET, POST'],
+  ['POST', '/api/exports/status', 'GET'],
+  ['POST', '/api/exports/download', 'GET'],
+]) {
+  test(`${method} ${path} responde 405 con los métodos de esa ruta`, async () => {
+    const { app } = buildApp();
+    const response = await app.handle({ method, path, headers: {} });
+    assert.equal(response.statusCode, 405);
+    assert.equal(response.headers.Allow, allow);
+  });
+}
+
+for (const [method, path] of [['GET', '/api/exports'], ['POST', '/api/exports'], ['GET', '/api/exports/status'], ['GET', '/api/exports/download']]) {
+  test(`${method} ${path} sin token responde 401`, async () => {
+    const { app } = buildApp();
+    const response = await app.handle({ method, path, headers: {} });
+    assert.equal(response.statusCode, 401);
+    assert.equal(errorOf(response), 'unauthorized');
+  });
+}
+
 for (const headers of [
   {},
   { 'content-type': 'text/plain' },

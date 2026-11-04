@@ -81,7 +81,7 @@ test('al abrir cada conexión fija wait_timeout y los topes de lo que no lleva h
   const pool = new FakePool([]);
   createDb(PROD_CONFIG, () => pool);
   const statements = [];
-  pool.emit('connection', { query: (sql) => statements.push(sql) });
+  pool.emit('connection', { once() {}, query: (sql) => statements.push(sql) });
   assert.deepEqual(statements, [
     'SET SESSION wait_timeout = 120, max_execution_time = 3000, lock_wait_timeout = 5, innodb_lock_wait_timeout = 5',
   ]);
@@ -93,7 +93,7 @@ test('una falla al fijar los topes de sesión solo registra el código', () => {
   const spy = mock.method(console, 'error', () => {});
   const failure = new Error('detalle privado');
   failure.code = 'ER_X';
-  pool.emit('connection', { query: (sql, callback) => callback(failure) });
+  pool.emit('connection', { once() {}, query: (sql, callback) => callback(failure) });
   const logged = spy.mock.calls.map((call) => call.arguments.join(' ')).join('\n');
   spy.mock.restore();
   assert.match(logged, /ER_X/);

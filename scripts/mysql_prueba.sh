@@ -58,6 +58,13 @@ is_running() {
   ps -ww -p "$pid" -o command= 2>/dev/null | grep -Fq -- "--datadir=$DATA"
 }
 
+# Un mysqld puede seguir vivo aunque el puerto ya no escuche y el archivo de pid ya no exista: esto mira la lista de procesos.
+pids_with_datadir() {
+  local all
+  all=$(ps -axww -o pid=,command=)
+  printf '%s\n' "$all" | awk -v needle="--datadir=$DATA" 'index($0, needle) { print $1 }'
+}
+
 port_in_use() {
   (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null
 }
@@ -68,18 +75,22 @@ mysql_root() {
 }
 
 stop_server() {
-  is_running || return 0
-  local pid i
-  pid=$(cat "$PID_FILE")
-  kill "$pid"
+  local pids pid i
+  pids=$(pids_with_datadir)
+  [ -n "$pids" ] || return 0
+  for pid in $pids; do
+    kill "$pid" 2>/dev/null || true
+  done
   for i in $(seq 1 120); do
-    kill -0 "$pid" 2>/dev/null || return 0
+    [ -n "$(pids_with_datadir)" ] || return 0
     sleep 0.5
   done
-  die "el mysqld $pid no terminó en 60 s; no se borra su datadir."
+  die "el mysqld $(pids_with_datadir | tr '\n' ' ')no terminó en 60 s; no se borra su datadir."
 }
 
 wipe_dir() {
+  # Sin datadir, un mysqld vivo puede escribir sin parar en su log ya borrado, que no se ve con du.
+  [ -z "$(pids_with_datadir)" ] || die "sigue vivo un mysqld con $DATA: no se borra."
   if [ -e "$DIR" ] && [ -n "$(ls -A "$DIR" 2>/dev/null)" ]; then
     # Sin la marca, el directorio no es de este script: PAGES_TEST_MYSQL_DIR podría apuntar a cualquier parte.
     [ -f "$MARK" ] || die "$DIR no fue creado por este script: no se borra."
@@ -94,6 +105,8 @@ wipe_dir() {
 start_server() {
   mkdir -p "$DIR"
   : > "$MARK"
+  # Tope por archivo, en bloques de 1 KiB, para que un log descontrolado no pueda llenar el disco.
+  ulimit -f 4194304
   command -v mysqld >/dev/null || die 'no se encuentra mysqld en el PATH.'
   command -v mysql >/dev/null || die 'no se encuentra mysql en el PATH.'
 
@@ -153,7 +166,7 @@ cmd_up() {
   MYSQL=mysql \
     MYSQL_ADMIN_ARGS='-u root' \
     MYSQL_HOST_ARGS="--protocol=TCP -h 127.0.0.1 -P $PORT --ssl-mode=VERIFY_CA --ssl-ca=$DATA/ca.pem" \
-    OUT_ENV="$work/pages_app.env" \
+    OUT_ENV="$work/cuentas.env" \
     bash "$ROOT/scripts/aprovisionar_bd.sh"
 
   log 'creando logins de prueba'
@@ -163,6 +176,13 @@ cmd_up() {
   create_login inactivo 101 "$work/inactivo"
   mysql_root -e "UPDATE connectus_pages.login SET active = 0 WHERE username = 'inactivo'"
 
+  local link_secret demo_id demo_url
+  link_secret=$(python3 -I -c 'import secrets; print(secrets.token_hex(32))')
+  demo_id=$(mysql_root -N -e "SELECT id FROM connectus_pages.login WHERE username = 'demo'")
+  # La base es de mentira: crear_enlace.js solo emite para https, y scripts/dev.js pone este enlace en sus propias URL.
+  demo_url=$(printf '%s' "$link_secret" | node "$ROOT/scripts/crear_enlace.js" \
+    --base https://localhost/ --ranura a --login "$demo_id" --version 0 2>/dev/null)
+
   mkdir -p "$(dirname "$ENV_LOCAL")"
   {
     printf 'STAGE=local\n'
@@ -170,9 +190,11 @@ cmd_up() {
     printf 'DB_PORT=%s\n' "$PORT"
     printf 'DB_SSL_CA_FILE=%s\n' "$DATA/ca.pem"
     printf 'DB_ADMIN_USER=root\n'
-    cat "$work/pages_app.env"
+    cat "$work/cuentas.env"
     printf 'TOKEN_SECRET='
     python3 -I -c 'import secrets; print(secrets.token_hex(32))'
+    printf 'LINK_SECRET_A=%s\n' "$link_secret"
+    printf 'LINK_DEMO=%s\n' "${demo_url#*#e=}"
     printf 'LOGIN_DEMO_USER=demo\nLOGIN_DEMO_PASSWORD='
     tail -n 1 "$work/demo"
     printf 'LOGIN_SOLO102_USER=solo102\nLOGIN_SOLO102_PASSWORD='

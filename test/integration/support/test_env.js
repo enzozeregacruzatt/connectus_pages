@@ -21,6 +21,10 @@ function loadTestEnv() {
     password: raw.DB_PASSWORD,
     caFile: raw.DB_SSL_CA_FILE,
     adminUser: raw.DB_ADMIN_USER,
+    workerUser: raw.WORKER_DB_USER,
+    workerPassword: raw.WORKER_DB_PASSWORD,
+    linkSecretA: raw.LINK_SECRET_A,
+    demoLink: raw.LINK_DEMO,
     demoPassword: raw.LOGIN_DEMO_PASSWORD,
     solo102Password: raw.LOGIN_SOLO102_PASSWORD,
     inactivePassword: raw.LOGIN_INACTIVO_PASSWORD,
@@ -53,6 +57,7 @@ function localConfigEnv(env, overrides = {}) {
     DB_USER: env.user,
     DB_PASSWORD: env.password,
     DB_SSL_CA_FILE: env.caFile,
+    LINK_SECRET_A: env.linkSecretA,
     FRAME_ANCESTORS: 'http://127.0.0.1:8788',
     ...overrides,
   };

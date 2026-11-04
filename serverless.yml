@@ -15,6 +15,9 @@ provider:
   logRetentionInDays: 30
   environment:
     STAGE: prod
+    EXPORTS_BUCKET:
+      Ref: ExportsBucket
+  # El rol de la función app. La lista es exacta: la app no puede leer la clave de pages_worker, y el trabajador tiene su propio rol.
   iam:
     role:
       statements:
@@ -22,7 +25,25 @@ provider:
           Action:
             - ssm:GetParameters
           Resource:
-            - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/connectus-pages/prod/*
+            - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/connectus-pages/prod/db_host
+            - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/connectus-pages/prod/db_user
+            - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/connectus-pages/prod/db_password
+            - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/connectus-pages/prod/token_secret
+            - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/connectus-pages/prod/frame_ancestors
+            - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/connectus-pages/prod/cors_opaque
+            - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/connectus-pages/prod/link_secret_a
+            - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/connectus-pages/prod/link_secret_b
+        # Una URL prefirmada vale con los permisos de quien la firma.
+        - Effect: Allow
+          Action:
+            - s3:GetObject
+          Resource:
+            - Fn::Join:
+                - ''
+                - - Fn::GetAtt:
+                      - ExportsBucket
+                      - Arn
+                  - /exports/*
 
 functions:
   app:
@@ -35,6 +56,18 @@ functions:
       - http:
           path: /{proxy+}
           method: any
+  # De a uno: una sola exportación pesada a la vez. Para detenerlo en una emergencia, reservedConcurrency: 0.
+  worker:
+    handler: src/worker/handler.worker
+    role: WorkerRole
+    reservedConcurrency: 1
+    timeout: 900
+    memorySize: 512
+    # Mientras una corrida sigue viva, las siguientes se descartan: no hay nada que reintentar, y al minuto llega otra.
+    maximumEventAge: 60
+    maximumRetryAttempts: 0
+    events:
+      - schedule: rate(1 minute)
 
 # El throttling primero: si el dominio falla, por ejemplo sin create_domain, los hooks se detienen y la etapa quedaría sin él.
 plugins:
@@ -67,6 +100,278 @@ package:
 
 resources:
   Resources:
+    ExportsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        OwnershipControls:
+          Rules:
+            - ObjectOwnership: BucketOwnerEnforced
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: AES256
+        LifecycleConfiguration:
+          Rules:
+            - Id: expira-exportaciones
+              Status: Enabled
+              Prefix: exports/
+              ExpirationInDays: 7
+              AbortIncompleteMultipartUpload:
+                DaysAfterInitiation: 1
+    ExportsBucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket:
+          Ref: ExportsBucket
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Sid: SoloTLS
+              Effect: Deny
+              Principal: '*'
+              Action: s3:*
+              Resource:
+                - Fn::GetAtt:
+                    - ExportsBucket
+                    - Arn
+                - Fn::Join:
+                    - ''
+                    - - Fn::GetAtt:
+                          - ExportsBucket
+                          - Arn
+                      - /*
+              Condition:
+                Bool:
+                  aws:SecureTransport: 'false'
+    # Sin plugin: el rol de provider.iam es el de la app, que lee secretos que el trabajador no debe poder leer.
+    WorkerRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: connectus-pages-worker
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - ssm:GetParameters
+                  Resource:
+                    - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/connectus-pages/prod/db_host
+                    - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/connectus-pages/prod/worker_db_user
+                    - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/connectus-pages/prod/worker_db_password
+                    - arn:aws:ssm:${aws:region}:${aws:accountId}:parameter/connectus-pages/prod/worker_quiet_windows
+                - Effect: Allow
+                  Action:
+                    - s3:PutObject
+                    - s3:GetObject
+                    - s3:AbortMultipartUpload
+                    - s3:ListMultipartUploadParts
+                  Resource:
+                    - Fn::Join:
+                        - ''
+                        - - Fn::GetAtt:
+                              - ExportsBucket
+                              - Arn
+                          - /exports/*
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource:
+                    - arn:aws:logs:${aws:region}:${aws:accountId}:log-group:/aws/lambda/connectus-pages-prod-worker:*
+    # Los eventos van en texto después de la marca del runtime, y un patrón JSON no calzaría: por eso se busca por palabra.
+    AppFailuresFilter:
+      Type: AWS::Logs::MetricFilter
+      DependsOn: AppLogGroup
+      Properties:
+        LogGroupName:
+          Ref: AppLogGroup
+        FilterPattern: '?"request_failed" ?"handler_failed" ?"request_deadline_exceeded"'
+        MetricTransformations:
+          - MetricNamespace: ConnectusPages
+            MetricName: AppFailures
+            MetricValue: '1'
+            DefaultValue: 0
+    ExportFailedFilter:
+      Type: AWS::Logs::MetricFilter
+      DependsOn: WorkerLogGroup
+      Properties:
+        LogGroupName:
+          Ref: WorkerLogGroup
+        FilterPattern: '"export_failed" -"too_many_rows"'
+        MetricTransformations:
+          - MetricNamespace: ConnectusPages
+            MetricName: ExportFailed
+            MetricValue: '1'
+            DefaultValue: 0
+    AppSchemaErrorFilter:
+      Type: AWS::Logs::MetricFilter
+      DependsOn: AppLogGroup
+      Properties:
+        LogGroupName:
+          Ref: AppLogGroup
+        FilterPattern: '"schema_error"'
+        MetricTransformations:
+          - MetricNamespace: ConnectusPages
+            MetricName: SchemaError
+            MetricValue: '1'
+            DefaultValue: 0
+    WorkerSchemaErrorFilter:
+      Type: AWS::Logs::MetricFilter
+      DependsOn: WorkerLogGroup
+      Properties:
+        LogGroupName:
+          Ref: WorkerLogGroup
+        FilterPattern: '"schema_error"'
+        MetricTransformations:
+          - MetricNamespace: ConnectusPages
+            MetricName: SchemaError
+            MetricValue: '1'
+            DefaultValue: 0
+    LinkSuspectFilter:
+      Type: AWS::Logs::MetricFilter
+      DependsOn: AppLogGroup
+      Properties:
+        LogGroupName:
+          Ref: AppLogGroup
+        FilterPattern: '"link_suspect"'
+        MetricTransformations:
+          - MetricNamespace: ConnectusPages
+            MetricName: LinkSuspect
+            MetricValue: '1'
+            DefaultValue: 0
+    ExportCreateFilter:
+      Type: AWS::Logs::MetricFilter
+      DependsOn: AppLogGroup
+      Properties:
+        LogGroupName:
+          Ref: AppLogGroup
+        FilterPattern: '"export_create"'
+        MetricTransformations:
+          - MetricNamespace: ConnectusPages
+            MetricName: ExportCreate
+            MetricValue: '1'
+            DefaultValue: 0
+    WorkerErrorsAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: connectus-pages-worker-errors
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+          - Name: FunctionName
+            Value:
+              Ref: WorkerLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        Threshold: 1
+        TreatMissingData: notBreaching
+        AlarmActions:
+          - ${env:PAGES_ALARM_TOPIC_ARN}
+    # Un trabajador detenido no registra nada, así que no tener datos también es una alarma.
+    WorkerInvocationsAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: connectus-pages-worker-invocations
+        Namespace: AWS/Lambda
+        MetricName: Invocations
+        Dimensions:
+          - Name: FunctionName
+            Value:
+              Ref: WorkerLambdaFunction
+        Statistic: Sum
+        # Una corrida dura hasta 15 minutos y las invocaciones de esos minutos no cuentan: con menos, una exportación larga la dispara.
+        Period: 1200
+        EvaluationPeriods: 1
+        ComparisonOperator: LessThanThreshold
+        Threshold: 1
+        TreatMissingData: breaching
+        AlarmActions:
+          - ${env:PAGES_ALARM_TOPIC_ARN}
+    AppFailuresAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: connectus-pages-app-failures
+        Namespace: ConnectusPages
+        MetricName: AppFailures
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        Threshold: 1
+        TreatMissingData: notBreaching
+        AlarmActions:
+          - ${env:PAGES_ALARM_TOPIC_ARN}
+    ExportFailedAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: connectus-pages-export-failed
+        Namespace: ConnectusPages
+        MetricName: ExportFailed
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        Threshold: 1
+        TreatMissingData: notBreaching
+        AlarmActions:
+          - ${env:PAGES_ALARM_TOPIC_ARN}
+    SchemaErrorAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: connectus-pages-schema-error
+        Namespace: ConnectusPages
+        MetricName: SchemaError
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        Threshold: 1
+        TreatMissingData: notBreaching
+        AlarmActions:
+          - ${env:PAGES_ALARM_TOPIC_ARN}
+    LinkSuspectAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: connectus-pages-link-suspect
+        Namespace: ConnectusPages
+        MetricName: LinkSuspect
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        Threshold: 1
+        TreatMissingData: notBreaching
+        AlarmActions:
+          - ${env:PAGES_ALARM_TOPIC_ARN}
+    ExportsUnusualAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmName: connectus-pages-exports-unusual
+        Namespace: ConnectusPages
+        MetricName: ExportCreate
+        Statistic: Sum
+        Period: 3600
+        EvaluationPeriods: 1
+        ComparisonOperator: GreaterThanThreshold
+        Threshold: 20
+        TreatMissingData: notBreaching
+        AlarmActions:
+          - ${env:PAGES_ALARM_TOPIC_ARN}
     LoginRateLimitAcl:
       Type: AWS::WAFv2::WebACL
       Properties:

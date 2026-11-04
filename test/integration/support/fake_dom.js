@@ -11,10 +11,11 @@ const ID_ATTRIBUTE = /\bid="([^"]+)"/;
 const VOID_TAGS = new Set(['input', 'link', 'meta']);
 
 class FakeElement {
-  constructor(document, tag, id = null) {
+  constructor(document, tag, id = null, namespace = null) {
     this.document = document;
     this.tag = tag;
     this.id = id;
+    this.namespace = namespace;
     this.parent = null;
     this.hidden = false;
     this.disabled = false;
@@ -47,13 +48,33 @@ class FakeElement {
   }
 
   append(...nodes) {
-    this.children.push(...nodes);
+    for (const node of nodes) {
+      node.remove();
+      node.parent = this;
+      this.children.push(node);
+    }
   }
 
   replaceChildren(...nodes) {
     this.ownText = '';
-    this.children = nodes;
+    this.children = [];
+    this.append(...nodes);
     if (this.tag === 'select') this.ownValue = null;
+  }
+
+  remove() {
+    if (this.parent) this.parent.children = this.parent.children.filter((child) => child !== this);
+    this.parent = null;
+  }
+
+  // Como un clic de verdad: un <a> queda anotado, porque es lo único que inicia una descarga.
+  click() {
+    if (this.tag === 'a') this.document.anchorClicks.push({ href: this.href, download: this.download, rel: this.rel });
+    this.fire('click');
+  }
+
+  getAttribute(name) {
+    return this.attributes.has(name) ? this.attributes.get(name) : null;
   }
 
   setAttribute(name, value) {
@@ -76,10 +97,18 @@ class FakeElement {
     this.listeners.set(type, [...(this.listeners.get(type) || []), listener]);
   }
 
-  fire(type) {
-    for (const listener of this.listeners.get(type) || []) {
-      listener({ type, target: this, preventDefault() {} });
-    }
+  fire(type, init = {}) {
+    const event = {
+      type,
+      target: this,
+      defaultPrevented: false,
+      preventDefault() {
+        this.defaultPrevented = true;
+      },
+      ...init,
+    };
+    for (const listener of this.listeners.get(type) || []) listener(event);
+    return event;
   }
 
   reset() {
@@ -104,8 +133,18 @@ function linkParents(html, document) {
 function createFakeDocument(html) {
   const document = {
     activeElement: null,
+    hidden: false,
     elements: new Map(),
+    anchorClicks: [],
+    listeners: new Map(),
     createElement: (tag) => new FakeElement(document, tag),
+    createElementNS: (namespace, tag) => new FakeElement(document, tag, null, namespace),
+    addEventListener(type, listener) {
+      document.listeners.set(type, [...(document.listeners.get(type) || []), listener]);
+    },
+    fire(type) {
+      for (const listener of document.listeners.get(type) || []) listener({ type, target: document });
+    },
     getElementById(id) {
       const element = document.elements.get(id);
       if (!element) throw new Error(`index.html no tiene el id ${id}`);

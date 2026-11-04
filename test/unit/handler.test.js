@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { mock, test } = require('node:test');
 
 const handlerModule = require('../../src/handler');
-const { buildApp, signIn, PASSWORD, VALID_SEARCH } = require('./support/app_fixture');
+const { buildApp, linkFor, signIn, PASSWORD, VALID_SEARCH } = require('./support/app_fixture');
 
 const { DEADLINE_MARGIN_MS, DEFAULT_DEADLINE_MS, createAppHolder, createHandler, toRequest } = handlerModule;
 
@@ -27,7 +27,7 @@ function handlerFor(app) {
   return createHandler(async () => app);
 }
 
-const loginBody = JSON.stringify({ username: 'demo', password: PASSWORD });
+const loginBody = JSON.stringify({ link: linkFor(), username: 'demo', password: PASSWORD });
 
 test('el handler exporta app', () => {
   assert.equal(typeof handlerModule.app, 'function');
@@ -154,6 +154,16 @@ test('dos Content-Type no dejan pasar el login', async () => {
     body: loginBody,
   }));
   assert.equal(response.statusCode, 415);
+});
+
+test('dos Origin no cuentan como Origin: null', async () => {
+  const { app } = buildApp({ config: { corsOpaque: true } });
+  const response = await handlerFor(app)(restEvent({
+    path: '/api/sms',
+    multiValueHeaders: { Origin: ['null', 'null'] },
+  }));
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.headers['Access-Control-Allow-Origin'], undefined);
 });
 
 test('una cabecera o parámetro llamado __proto__ no contamina nada', () => {
@@ -368,4 +378,23 @@ test('una carga descartada se cierra si termina tarde, y si falla tarde no borra
   assert.equal(holder.get(), third);
   assert.equal(builds, 3);
   pending[2].resolve({ close() {} });
+});
+
+test('el instante de inicio se toma al entrar al handler, con el arranque en frío incluido', async () => {
+  let received;
+  const coldStartMs = 30;
+  const handler = createHandler(async () => {
+    await new Promise((resolve) => { setTimeout(resolve, coldStartMs); });
+    return {
+      handle: async (request) => {
+        received = request;
+        return { statusCode: 200, headers: {}, body: '', isBase64Encoded: false };
+      },
+    };
+  });
+  const before = performance.now();
+  await handler(restEvent());
+  assert.ok(received.startedAtMs >= before);
+  assert.ok(performance.now() - received.startedAtMs >= coldStartMs - 1);
+  assert.ok(received.startedAtMs - before < coldStartMs, 'se tomó antes de cargar la app');
 });

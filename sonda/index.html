@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sonda de Connectus</title>
+<script src="sonda.js" defer></script>
+</head>
+<body>
+<h1>Sonda de Connectus</h1>
+<p>Esta página no tiene datos ni pide claves. Revisa cómo el programa que la muestra trata a una página web. Sigue los pasos y manda
+una captura de toda la página a tu contacto de Connectus.</p>
+<p id="not-loaded">Si solo ves este texto, la prueba no pudo arrancar. Eso también sirve: mándalo en la captura.</p>
+<noscript><p>JavaScript está desactivado aquí. Eso también sirve: mándalo en la captura.</p></noscript>
+
+<h2>Resultados</h2>
+<table border="1" cellpadding="4">
+  <thead><tr><th scope="col">Prueba</th><th scope="col">Resultado</th></tr></thead>
+  <tbody id="results"></tbody>
+</table>
+
+<h2>Teclado</h2>
+<p>En estos campos no escribas nada real. Escribe algunas letras, pasa de uno a otro con Tab, presiona Enter y pega algo con Ctrl+V.</p>
+<p>
+  <label for="first-field">Primer campo</label>
+  <input id="first-field" type="text" autocomplete="off">
+  <label for="second-field">Segundo campo</label>
+  <input id="second-field" type="text" autocomplete="off">
+</p>
+
+<h2>Formulario</h2>
+<p>Presiona Enter en el campo y después el botón.</p>
+<form id="probe-form">
+  <label for="form-field">Campo</label>
+  <input id="form-field" type="text" autocomplete="off">
+  <button id="form-submit" type="submit">Enviar</button>
+</form>
+
+<h2>Ventanas</h2>
+<p>Anota si se abre dentro del programa, en el navegador o si no pasa nada.</p>
+<p>
+  <button id="open-window" type="button">Abrir con window.open</button>
+  <a href="./" target="_blank" rel="noopener">Abrir con target=_blank</a>
+</p>
+
+<h2>Descargas</h2>
+<p>Prueba cada una y anota si bajó un archivo, a qué carpeta y con qué nombre.</p>
+<p>
+  <a href="descarga" download="sonda-a.txt">Enlace con download</a>
+  <button id="blob-download" type="button">Archivo generado en la página</button>
+  <a href="descarga">Enlace con Content-Disposition</a>
+</p>
+<p>Deja esta para el final. Anota si la página se reemplaza por un error y qué hay que hacer para volver a ella.</p>
+<p><a href="descarga-falla">Enlace de una descarga que falla</a></p>
+
+<h2>Recarga</h2>
+<p>Cambia de página u hoja y vuelve, actualiza el informe, reabre el archivo. Si la hora de carga cambió, la página se recargó.</p>
+</body>
+</html>
