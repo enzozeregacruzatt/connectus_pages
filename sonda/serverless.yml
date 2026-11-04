@@ -1,0 +1,28 @@
+# Se despliega aparte, desde esta carpeta: serverless deploy. El otro origen es el punto: así se ve cómo trata el BI a una página ajena,
+# sin abrir frame-ancestors en la app.
+service: connectus-pages-sonda
+
+frameworkVersion: '4'
+
+provider:
+  name: aws
+  stage: prod
+  runtime: nodejs22.x
+  region: us-west-2
+  memorySize: 128
+  timeout: 5
+  # Es pública y registra cabeceras de quien la abra: poco tiempo, y no más que unas pocas a la vez.
+  logRetentionInDays: 7
+
+functions:
+  sonda:
+    handler: handler.sonda
+    reservedConcurrency: 2
+    url: true
+
+package:
+  patterns:
+    - '!**'
+    - handler.js
+    - index.html
+    - sonda.js

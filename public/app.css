@@ -1,0 +1,807 @@
+:root {
+  color-scheme: light;
+  --text: #344767;
+  --muted: #67748e;
+  --border: #dce4ec;
+  --accent: #5db7e5;
+  --accent-soft: rgba(93, 183, 229, 0.14);
+  --surface: #ffffff;
+  --surface-alt: #f7f9fc;
+  --status-bg: #eef3f9;
+  --error: #c0392b;
+  --error-bg: #fdecea;
+  --focus: #344767;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html {
+  background: var(--surface);
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--surface);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 1rem;
+  line-height: 1.45;
+  margin: 0;
+}
+
+h1,
+h2,
+p,
+dl,
+dd,
+ul {
+  margin: 0;
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  border: 0;
+  clip-path: inset(50%);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+.page {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr);
+  margin: 0 auto;
+  max-width: 72rem;
+  padding: 1rem;
+}
+
+.stack {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.icon {
+  fill: none;
+  flex: none;
+  height: 1em;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  width: 1em;
+}
+
+/* Cabecera */
+
+.hero {
+  background: linear-gradient(135deg, #344767 0%, #416f96 58%, #5db7e5 100%);
+  border-radius: 1rem;
+  box-shadow: 0 12px 32px rgba(52, 71, 103, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.25rem;
+}
+
+/* En la plataforma la píldora es blanca translúcida: sobre la parte clara del degradado no llega a 4,5:1. */
+.hero__eyebrow {
+  align-items: center;
+  align-self: flex-start;
+  background: rgba(52, 71, 103, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  color: #ffffff;
+  display: inline-flex;
+  font-size: 0.75rem;
+  font-weight: 700;
+  gap: 0.5rem;
+  letter-spacing: 0.04em;
+  padding: 0.45rem 0.8rem;
+  text-transform: uppercase;
+}
+
+.hero__title {
+  color: #ffffff;
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1.2;
+  margin-top: 0.75rem;
+}
+
+.hero__limit {
+  align-items: center;
+  background: var(--surface);
+  border-radius: 0.85rem;
+  color: var(--text);
+  display: flex;
+  gap: 0.8rem;
+  padding: 0.85rem 1.1rem;
+}
+
+.hero__limit strong,
+.hero__limit-note {
+  display: block;
+}
+
+.hero__limit-icon {
+  color: var(--accent);
+  font-size: 1.5rem;
+}
+
+.hero__limit-note {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+/* El nombre de un envío puede ser largo y sin espacios. */
+.hero__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.hero__title:focus {
+  outline: none;
+}
+
+.hero__subtitle {
+  color: #ffffff;
+  font-size: 0.9rem;
+  margin-top: 0.35rem;
+}
+
+/* Barra de navegación */
+
+.app-bar {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.app-bar__account {
+  flex: 1 1 14rem;
+}
+
+.app-bar__menu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.menu-button,
+.tab-button {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.7rem;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  min-height: 2.75rem;
+  padding: 0.5rem 0.9rem;
+}
+
+.menu-button:hover:not(:disabled),
+.tab-button:hover {
+  background: var(--status-bg);
+}
+
+.menu-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.menu-button[aria-current="page"],
+.tab-button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--text);
+}
+
+.back-button {
+  justify-self: start;
+}
+
+/* Tarjetas */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  box-shadow: 0 4px 16px rgba(52, 71, 103, 0.06);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.card--narrow {
+  justify-self: center;
+  max-width: 26rem;
+  width: 100%;
+}
+
+.card__body {
+  padding: 1rem;
+}
+
+.card__body--compact {
+  padding-bottom: 0.75rem;
+}
+
+.card__head {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.card__heading {
+  flex: 1 1 auto;
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.card__intro {
+  margin-bottom: 1rem;
+}
+
+.card__icon {
+  align-items: center;
+  background: var(--accent-soft);
+  border-radius: 0.75rem;
+  color: var(--accent);
+  display: flex;
+  flex: 0 0 2.625rem;
+  font-size: 1.25rem;
+  height: 2.625rem;
+  justify-content: center;
+}
+
+.card__title {
+  font-size: 1.125rem;
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+}
+
+/* Mismo ancho que un filtro de dos columnas: cuatro tarjetas chicas, sin que una quede de franja. */
+.card-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(19rem, 100%), 1fr));
+}
+
+.card__head--wrap {
+  flex-wrap: wrap;
+}
+
+.card__head--wrap .card__heading {
+  flex-basis: 14rem;
+}
+
+.card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.card__actions:not(:has(> :not([hidden]))) {
+  margin-top: 0;
+}
+
+.facts {
+  display: grid;
+  font-size: 0.9rem;
+  gap: 0.4rem 1rem;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  margin-top: 0.5rem;
+  max-width: 34rem;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.sms-bubble {
+  background: var(--status-bg);
+  border-radius: 1rem;
+  margin: 1rem 0 0.5rem;
+  overflow-wrap: anywhere;
+  padding: 0.75rem 1rem;
+  white-space: pre-line;
+}
+
+.progress-bar {
+  display: block;
+  height: 0.75rem;
+  margin-bottom: 0.35rem;
+  width: 100%;
+}
+
+.download-help {
+  background: var(--surface-alt);
+  border-top: 1px solid var(--border);
+  display: grid;
+  font-size: 0.875rem;
+  gap: 0.5rem;
+  justify-items: start;
+  padding: 0.75rem 1rem;
+}
+
+.download-help .field {
+  width: 100%;
+}
+
+#login-title {
+  margin-bottom: 0.75rem;
+}
+
+/* Formularios */
+
+.filters {
+  align-items: end;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(11rem, 100%), 1fr));
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.field__label {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.field__static {
+  align-items: center;
+  display: flex;
+  font-weight: 600;
+  min-height: 2.75rem;
+  overflow-wrap: anywhere;
+}
+
+/* El gris de borde del resto de la página (#dce4ec) no llega al 3:1 que AA pide a un control. */
+.control {
+  background: var(--surface);
+  border: 1px solid var(--muted);
+  border-radius: 0.7rem;
+  color: var(--text);
+  font: inherit;
+  max-width: 100%;
+  min-height: 2.75rem;
+  min-width: 0;
+  padding: 0.5rem 0.75rem;
+  width: 100%;
+}
+
+.control::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.control:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 0.2rem rgba(93, 183, 229, 0.2);
+}
+
+.control[aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+.button {
+  background: var(--text);
+  border: 1px solid var(--text);
+  border-radius: 0.7rem;
+  color: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  min-height: 2.75rem;
+  padding: 0.5rem 1.25rem;
+}
+
+.button:hover:not(:disabled) {
+  background: #416f96;
+  border-color: #416f96;
+}
+
+.button--secondary {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.button--secondary:hover:not(:disabled) {
+  background: var(--status-bg);
+  border-color: var(--text);
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/*
+ * Los avisos vacíos quedan en el árbol, sin alto: una región aria-live oculta con display:none
+ * no se anuncia al recibir texto.
+ */
+.notice:not(:empty) {
+  border-radius: 0.6rem;
+  font-size: 0.875rem;
+  margin-top: 0.75rem;
+  padding: 0.6rem 0.8rem;
+}
+
+#link-notice,
+#load-notice,
+#login-status:not(:empty),
+#search-status:not(:empty) {
+  background: var(--status-bg);
+}
+
+.notice--status:not(:empty) {
+  background: var(--status-bg);
+}
+
+/* Sin aviso, el bloque no suma un espacio entre tarjetas: los avisos vacíos siguen en el árbol, por lo de aria-live. */
+.notices {
+  display: grid;
+  gap: 0.5rem;
+  margin-bottom: -1rem;
+}
+
+.notices:has(.notice:not(:empty)) {
+  margin-bottom: 0;
+}
+
+.notices .notice:not(:empty) {
+  margin-top: 0;
+}
+
+.notice--error:not(:empty) {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+/*
+ * Sin JS en línea, nada distingue si app.js falló o solo tarda, así que el aviso parte en index.html, con un texto cierto en los
+ * dos casos, y app.js lo oculta al arrancar. Espera un poco para no asomarse en una carga normal.
+ */
+#load-notice {
+  animation: load-notice-appears 0s linear 3s both;
+}
+
+@keyframes load-notice-appears {
+  from {
+    visibility: hidden;
+  }
+
+  to {
+    visibility: visible;
+  }
+}
+
+/* Sin JavaScript ya habla el <noscript>. */
+@media (scripting: none) {
+  #load-notice {
+    display: none;
+  }
+}
+
+/* Resultados */
+
+[aria-busy="true"] .table-wrap,
+[aria-busy="true"] > .pager {
+  opacity: 0.55;
+}
+
+/* position: un título oculto con position: absolute se saldría del scroll propio y le daría scroll horizontal a la página. */
+.table-wrap {
+  border-top: 1px solid var(--border);
+  overflow-x: auto;
+  position: relative;
+}
+
+.table-wrap:focus-visible {
+  outline-offset: -3px;
+}
+
+.sms-table {
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  width: 100%;
+}
+
+/* Texto principal y no secundario: #67748e sobre este fondo queda bajo 4,5:1. */
+.sms-table th {
+  background: var(--surface-alt);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 0.75rem 1rem;
+  text-align: left;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.sms-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.75rem 1rem;
+  vertical-align: top;
+}
+
+.sms-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.sms-table__date {
+  white-space: nowrap;
+}
+
+.sms-table__number {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.sms-table__message {
+  max-width: 27rem;
+  min-width: 16rem;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+  word-break: break-word;
+}
+
+.sms-table__delivery {
+  max-width: 16rem;
+  min-width: 8rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.sms-table__none {
+  color: var(--muted);
+}
+
+.sms-table__reason {
+  margin-top: 0.35rem;
+  max-width: 18rem;
+  min-width: 12rem;
+}
+
+.stats-table td,
+.stats-table th {
+  white-space: nowrap;
+}
+
+.stats-table tbody th,
+.stats-table tfoot th {
+  background: var(--surface);
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.stats-table__count {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.stats-table__total,
+.stats-table tfoot td {
+  font-weight: 700;
+}
+
+.stats-table tfoot th,
+.stats-table tfoot td {
+  border-bottom: 0;
+  border-top: 2px solid var(--border);
+}
+
+.tab-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.link-button {
+  background: none;
+  border: 0;
+  color: #416f96;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  padding: 0;
+  text-align: left;
+  text-decoration: underline;
+}
+
+.link-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.icon-button {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 1.1rem;
+  height: 2.25rem;
+  justify-content: center;
+  width: 2.25rem;
+}
+
+.icon-button:hover {
+  background: var(--status-bg);
+}
+
+.status-pill {
+  background: var(--status-bg);
+  border-radius: 999px;
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.35rem 0.7rem;
+  white-space: nowrap;
+}
+
+/* Los tonos de la plataforma, de fondo: como color de texto, el amarillo y el turquesa no llegan a 4,5:1. */
+.status-pill--info {
+  background: rgba(93, 183, 229, 0.25);
+}
+
+.status-pill--ok {
+  background: rgba(44, 206, 192, 0.28);
+}
+
+.status-pill--warn {
+  background: rgba(255, 193, 7, 0.32);
+}
+
+.status-pill--error {
+  background: rgba(245, 83, 67, 0.22);
+}
+
+.status-pill--muted {
+  background: rgba(102, 116, 142, 0.22);
+}
+
+/* Dona */
+
+.donut {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: center;
+  margin-top: 0.5rem;
+}
+
+.donut__chart {
+  flex: none;
+  height: 9.5rem;
+  width: 9.5rem;
+}
+
+.donut__slice {
+  fill: none;
+  stroke-width: 5;
+}
+
+.donut__total {
+  fill: var(--text);
+  font-size: 4.2px;
+  font-weight: 700;
+}
+
+.donut__legend {
+  display: grid;
+  flex: 1 1 11rem;
+  font-size: 0.82rem;
+  gap: 0.3rem;
+  list-style: none;
+  padding: 0;
+}
+
+.donut__legend li {
+  align-items: center;
+  display: flex;
+  gap: 0.45rem;
+}
+
+.donut__legend strong {
+  margin-left: auto;
+}
+
+.donut__swatch {
+  flex: none;
+  height: 0.7rem;
+  width: 0.7rem;
+}
+
+.pager {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+}
+
+@media (min-width: 48rem) {
+  .page {
+    gap: 1.25rem;
+    padding: 1.5rem;
+  }
+
+  .hero {
+    align-items: center;
+    flex-direction: row;
+    justify-content: space-between;
+    padding: 1.75rem 2rem;
+  }
+
+  .hero__title {
+    font-size: 2rem;
+  }
+
+  .hero__limit {
+    flex-shrink: 0;
+    min-width: 13rem;
+  }
+
+  .card__body {
+    padding: 1.5rem;
+  }
+
+  .card__body--compact {
+    padding-bottom: 1rem;
+  }
+
+  .sms-table th,
+  .sms-table td {
+    padding-left: 1.25rem;
+    padding-right: 1.25rem;
+  }
+
+  .pager {
+    padding: 1rem 1.5rem;
+  }
+}
